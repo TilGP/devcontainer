@@ -30,10 +30,16 @@ if [ -n "$DEV_USER" ] && [ "$DEV_USER" != "root" ]; then
     echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$DEV_USER"
     chmod 0440 "/etc/sudoers.d/$DEV_USER"
 
-    # Ensure container-specific isolated directories exist and have proper ownership
-    mkdir -p "$DEV_HOME/.local/bin" "$DEV_HOME/.local/share" "$DEV_HOME/.local/state" "$DEV_HOME/.config" "$DEV_HOME/.cache" 2>/dev/null || true
+    # Ensure home and standard local subdirectories exist
+    mkdir -p "$DEV_HOME/.local/bin" "$DEV_HOME/.local/share" "$DEV_HOME/.local/state" 2>/dev/null || true
     chown "$DEV_UID:$DEV_GID" "$DEV_HOME" 2>/dev/null || true
-    chown -R "$DEV_UID:$DEV_GID" "$DEV_HOME/.local" "$DEV_HOME/.cache" "$DEV_HOME/.config" 2>/dev/null || true
+
+    # Fix ownership for configured volume directories
+    if [ -n "$DEV_CHOWN_DIRS" ]; then
+        for chdir in $DEV_CHOWN_DIRS; do
+            [ -d "$chdir" ] && chown -R "$DEV_UID:$DEV_GID" "$chdir" 2>/dev/null || true
+        done
+    fi
 
     # Clean up accidental ~/.tmux.conf symlink pointing to ~/.config/tmux/tmux.conf
     # which breaks Oh My Tmux when local config is in ~/.config/tmux/tmux.conf.local

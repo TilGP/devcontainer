@@ -11,7 +11,7 @@ won't match outside of my setup.
 - **Full In-Container Toolchain:** Clang 22, Clangd LSP, LLDB (`lldb-dap`), GDB, and CMake inside the container, giving full visibility into Linux system libraries and headers.
 - **Latest Fish & Neovim:** Built directly from official GitHub releases with standalone multi-arch binaries.
 - **Fish & Tmux Integration:** Initial run automatically copies host configurations from `~/.config/fish`, `~/.config/tmux`, and `~/.config/nvim` into the container config volume, allowing custom in-container tweaks without affecting the macOS host.
-- **Isolated Linux Environment:** Host `$HOME` is no longer mounted entirely. Instead, dedicated Docker named volumes (`devcontainer_local`, `devcontainer_config`, `devcontainer_cache`) isolate all `.local`, `.config`, and `.cache` directories (such as Treesitter `.so` parsers, Mason binaries, and shell data) from macOS binaries.
+- **Isolated Linux Environment:** Dedicated Docker named volumes (`devcontainer_local`, `devcontainer_config`, `devcontainer_cache`, `devcontainer_cursor`) isolate all `.local`, `.config`, `.cache`, and `.cursor` directories (such as Treesitter `.so` parsers, Mason binaries, shell data, and Cursor CLI state) from macOS binaries.
 - **Clean Project Mounts:** Always mounts `$HOME/projects` as well as the current project working directory, Git root, and essential configs (`.gitconfig`, `.ssh`).
 - **Compiler Variants:** Provides `clang`, `clang-tsan` (ThreadSanitizer-instrumented), and `clang++`.
 - **Project Independent:** Can be placed in `PATH` (e.g. `~/.local/bin/`) and launched from any project folder.
@@ -114,7 +114,7 @@ You can customize the devcontainer environment by editing `settings.env` directl
 - **Image Names & Tags:** Adjust `IMAGE_TAG_CLANG`, `IMAGE_TAG_CLANG_TSAN`, `IMAGE_TAG_CLANGPP`.
 - **Default Variant & Mode:** Set `DEFAULT_CONTAINER_VARIANT="clang"` and `DEFAULT_SHELL_MODE="tmux"`.
 - **Docker Run Arguments:** Customize `DOCKER_RUN_BASE_ARGS` or add custom flags (e.g. port forwards, GPU flags) to `DOCKER_RUN_EXTRA_ARGS`.
-- **Volumes & Mounts:** Change `VOLUME_LOCAL`, `VOLUME_CONFIG`, `VOLUME_CACHE`, or `PROJECTS_DIR`.
+- **Volumes & Mounts:** Configure isolated Docker volumes and host mounts in `VOLUMES`, or customize `PROJECTS_DIR`. All named volumes are auto-created and initialized with proper user ownership.
 - **Compilers & Sanitizers:** Adjust `DEFAULT_CC`, `DEFAULT_CXX`, `DEV_TIMEZONE`, `ASAN_OPTIONS`, and `TSAN_OPTIONS`.
 
 Override the settings file location by setting the `DEVCONTAINER_SETTINGS_FILE` environment variable.

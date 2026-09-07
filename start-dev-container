@@ -256,18 +256,85 @@ fi
 # Determine Git project root if applicable
 GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
-# Sanitize variant name for Docker volume naming (e.g. clang++ -> clangpp)
-SAFE_VARIANT="$(echo -n "$CONTAINER_VARIANT" | tr -c 'a-zA-Z0-9_.-' '_')"
+# --- Storage Volumes & Mounts Configuration ---
+STORAGE_SPECS=()
+add_volume_spec() {
+    local src="$1"
+    local dst="$2"
+    local opts="$3"
 
-# Docker Volume Names for data isolation between host OS (macOS/Darwin) and container (Linux)
-VOLUME_LOCAL="${VOLUME_LOCAL:-${DEV_CONTAINER_VOLUME_LOCAL:-devcontainer_local}}"
-VOLUME_CONFIG="${VOLUME_CONFIG:-${DEV_CONTAINER_VOLUME_CONFIG:-devcontainer_config}}"
-VOLUME_CACHE="${VOLUME_CACHE:-${DEV_CONTAINER_VOLUME_CACHE:-devcontainer_cache}}"
+    [ -z "$src" ] && return 0
+    case "$src" in
+        none|off|false) return 0 ;;
+    esac
 
-# Ensure Docker volumes exist
-docker volume inspect "$VOLUME_LOCAL" >/dev/null 2>&1 || docker volume create "$VOLUME_LOCAL" >/dev/null
-docker volume inspect "$VOLUME_CONFIG" >/dev/null 2>&1 || docker volume create "$VOLUME_CONFIG" >/dev/null
-docker volume inspect "$VOLUME_CACHE" >/dev/null 2>&1 || docker volume create "$VOLUME_CACHE" >/dev/null
+    # Expand ~ and $HOME
+    src="${src/#\~/$HOST_HOME}"
+    src="${src/\$HOME/$HOST_HOME}"
+    dst="${dst/#\~/$HOST_HOME}"
+    dst="${dst/\$HOME/$HOST_HOME}"
+
+    # Resolve relative paths for host bind mounts (Docker requires absolute paths for -v)
+    if [[ "$src" == ./* ]] || [[ "$src" == ../* ]]; then
+        src="$(cd "$src" 2>/dev/null && pwd || echo "$PWD/${src#./}")"
+    fi
+
+    STORAGE_SPECS+=("${src}|${dst}|${opts}")
+}
+
+for entry in "${VOLUMES[@]}"; do
+    [ -z "$entry" ] && continue
+    if [[ "$entry" == *:* ]]; then
+        IFS=":" read -r e_src e_dst e_opts <<< "$entry"
+        add_volume_spec "$e_src" "$e_dst" "$e_opts"
+    else
+        add_volume_spec "$entry" "${HOST_HOME}/.${entry#devcontainer_}" ""
+    fi
+done
+
+# Resolve volume mounted to ~/.config for --init-config
+VOLUME_CONFIG=""
+for spec in "${STORAGE_SPECS[@]}"; do
+    IFS="|" read -r s_src s_dst _ <<< "$spec"
+    if [ "$s_dst" = "${HOST_HOME}/.config" ]; then
+        VOLUME_CONFIG="$s_src"
+        break
+    fi
+done
+
+# Ensure volumes exist, initialize ownership for new named volumes, and build mount flags
+STORAGE_MOUNTS=()
+DEV_CHOWN_DIRS=()
+SEEN_TARGETS=" "
+
+for spec in "${STORAGE_SPECS[@]}"; do
+    IFS="|" read -r src dst opts <<< "$spec"
+    [ -z "$dst" ] && continue
+
+    # Prevent duplicate mounts to the same destination
+    if [[ "$SEEN_TARGETS" == *" $dst "* ]]; then
+        continue
+    fi
+    SEEN_TARGETS+="$dst "
+
+    # Check if src is a Docker named volume (does not start with / or .)
+    if [[ "$src" != /* ]] && [[ "$src" != .* ]]; then
+        if ! docker volume inspect "$src" >/dev/null 2>&1; then
+            docker volume create "$src" >/dev/null
+            docker run --rm -v "${src}:/vol" "$IMAGE" chown -R "${HOST_UID}:${HOST_GID}" /vol 2>/dev/null || true
+        fi
+    else
+        [ ! -e "$src" ] && mkdir -p "$src" 2>/dev/null || true
+    fi
+
+    mount_str="${src}:${dst}"
+    [ -n "$opts" ] && mount_str="${mount_str}:${opts}"
+    STORAGE_MOUNTS+=("-v" "$mount_str")
+
+    if [[ "$dst" == "${HOST_HOME}"/* ]]; then
+        DEV_CHOWN_DIRS+=("$dst")
+    fi
+done
 
 # Configuration initialization: guarded behind --init-config
 if [ "$INIT_CONFIG" = true ]; then
@@ -342,12 +409,10 @@ if [ -n "$CONTAINER_NAME" ]; then
     DOCKER_RUN_ARGS+=("--name" "$CONTAINER_NAME")
 fi
 
-# Isolated Docker volumes for ~/.local, ~/.config, and ~/.cache
-DOCKER_RUN_ARGS+=(
-    "-v" "${VOLUME_LOCAL}:${HOST_HOME}/.local"
-    "-v" "${VOLUME_CONFIG}:${HOST_HOME}/.config"
-    "-v" "${VOLUME_CACHE}:${HOST_HOME}/.cache"
-)
+# Storage volumes and host mounts configured via settings.env
+if [ ${#STORAGE_MOUNTS[@]} -gt 0 ]; then
+    DOCKER_RUN_ARGS+=("${STORAGE_MOUNTS[@]}")
+fi
 
 # Always mount projects directory if configured
 PROJECTS_DIR="${PROJECTS_DIR:-$HOST_HOME/projects}"
@@ -383,9 +448,7 @@ if [ -d "$HOST_HOME/.ssh" ]; then
 fi
 if [ -n "$SSH_AUTH_SOCK" ] && [ -e "$SSH_AUTH_SOCK" ]; then
     if [ "$(uname -s)" = "Darwin" ]; then
-        # On macOS (Docker Desktop / OrbStack), host Unix sockets cannot be bind-mounted
-        # directly from /var/run into Linux containers without permission / path issues.
-        # Instead, Docker Desktop and OrbStack provide a VM bridge socket at /run/host-services/ssh-auth.sock.
+        # On macOS (Docker Desktop / OrbStack), mount the VM bridge socket
         DOCKER_RUN_ARGS+=(
             "-v" "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"
             "-e" "SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock"
@@ -426,6 +489,7 @@ DOCKER_RUN_ARGS+=(
     "-e" "ASAN_OPTIONS=${ASAN_OPTIONS}"
     "-e" "TSAN_OPTIONS=${TSAN_OPTIONS}"
     "-e" "TZ=${DEV_TIMEZONE}"
+    "-e" "DEV_CHOWN_DIRS=${DEV_CHOWN_DIRS[*]}"
 )
 
 # If in a git repository with tsan.supp, pass suppressions

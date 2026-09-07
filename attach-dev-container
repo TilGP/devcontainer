@@ -115,8 +115,7 @@ for cid in $ALL_RUNNING_CIDS; do
          [ "$cimage" = "${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}" ] || \
          [ "$cimage" = "${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}" ] || \
          [[ "$cimage" == *devcontainer* ]] || \
-         [[ "$cmounts" == *devcontainer_* ]] || \
-         [[ "$cmounts" == *"${VOLUME_LOCAL:-devcontainer_local}"* ]]; then
+         [[ "$cmounts" == *devcontainer_* ]]; then
         is_devcontainer=true
     fi
 
