@@ -1,6 +1,10 @@
 # Neovim Development Container (devcontainer-nvim)
 
-Project-independent Docker-based development environment running Neovim, Fish, Tmux, and the Clang toolchain directly inside Linux.
+Project-independent Docker-based development environment running Neovim, Fish, Tmux, and a C++ base-toolchain-image directly inside Linux.
+
+NOTE: This is specifically tailored to my development setup and use-case.
+It makes a lot of assumptions about the host and base-toolchain-images that
+won't match outside of my setup.
 
 ## Features
 
