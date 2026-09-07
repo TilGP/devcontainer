@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# start-dev-container: Project-independent launcher for Neovim development container
+# Loads user configs for fish, tmux, and nvim, with Clang toolchain, LSP, and debuggers.
+
+set -e
+
+# Early check for --verbose to enable bash tracing across entire execution
+for arg in "$@"; do
+    if [ "$arg" = "--verbose" ]; then
+        set -x
+        break
+    fi
+done
+
+SCRIPT_DIR="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+
+# Load settings from settings.env if available
+SETTINGS_FILE="${DEVCONTAINER_SETTINGS_FILE:-$SCRIPT_DIR/settings.env}"
+if [ -f "$SETTINGS_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$SETTINGS_FILE"
+fi
+
+# --- Default Configuration ---
+CONTAINER_VARIANT="${CONTAINER_VARIANT:-${DEFAULT_CONTAINER_VARIANT:-clang}}"
+SHELL_MODE="${DEV_CONTAINER_SHELL:-${DEFAULT_SHELL_MODE:-tmux}}" # tmux, fish, or nvim
+EXTRA_DOCKER_ARGS=()
+REBUILD=false
+INIT_CONFIG=false
+STOP_CONTAINER=false
+VERBOSE=false
+
+show_help() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [-- COMMAND...]
+
+Starts the Neovim dev-container in the current working directory.
+Loads your fish, tmux, and Neovim configurations from isolated Docker volumes.
+Isolated volumes are used for Linux-specific configurations, .local data, and caches.
+
+When no command is provided, the container runs in the background (-d) and
+attaches via attach-dev-container, allowing sessions to exit and reconnect
+without terminating the devcontainer.
+
+Variants:
+  --clang            Use standard Clang toolchain (default)
+  --clang-tsan       Use TSan-instrumented Clang toolchain
+  --clang++          Use Clang C++ toolchain (sets CXX=clang++)
+  -v, --variant VAR  Specify variant explicitly: clang, clang-tsan, clang++, clangpp
+
+Modes:
+  --tmux             Start inside a tmux session (default)
+  --fish             Start directly into fish shell
+  --nvim             Start directly into Neovim
+  -c, --command CMD  Run custom command inside container
+
+Options:
+  --init-config      Copy host fish, tmux, and Neovim configs into the config volume
+  --stop             Stop the running devcontainer for the current directory
+  --re-build         Rebuild the container image before starting
+  --verbose          Enable bash tracing (set -x)
+  -e KEY=VAL         Pass additional environment variable
+  --root             Run container directly as root (default: match host user)
+  -w DIR             Set custom working directory inside container
+  --name NAME        Set container name
+  -h, --help         Show this help message
+
+Examples:
+  $(basename "$0")                    # Start tmux session in current directory
+  $(basename "$0") --clang-tsan       # Start with TSan toolchain
+  $(basename "$0") --nvim             # Open Neovim directly
+  $(basename "$0") --fish             # Open Fish shell directly
+  $(basename "$0") -- make -j8        # Run make inside dev-container
+EOF
+}
+
+# --- Parse Arguments ---
+COMMAND_OVERRIDE=()
+AS_ROOT=false
+CUSTOM_WORKDIR=""
+CONTAINER_NAME=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -h | --help)
+        show_help
+        exit 0
+        ;;
+    --clang)
+        CONTAINER_VARIANT="clang"
+        shift
+        ;;
+    --clang-tsan)
+        CONTAINER_VARIANT="clang-tsan"
+        shift
+        ;;
+    --clang++ | --clangpp)
+        CONTAINER_VARIANT="clang++"
+        shift
+        ;;
+    -v | --variant)
+        CONTAINER_VARIANT="$2"
+        shift 2
+        ;;
+    --tmux)
+        SHELL_MODE="tmux"
+        shift
+        ;;
+    --fish)
+        SHELL_MODE="fish"
+        shift
+        ;;
+    --nvim)
+        SHELL_MODE="nvim"
+        shift
+        ;;
+    -c | --command)
+        COMMAND_OVERRIDE=("fish" "-c" "$2")
+        shift 2
+        ;;
+    --init-config | --copy-config)
+        INIT_CONFIG=true
+        shift
+        ;;
+    --stop)
+        STOP_CONTAINER=true
+        shift
+        ;;
+    --root)
+        AS_ROOT=true
+        shift
+        ;;
+    --re-build | --rebuild)
+        REBUILD=true
+        shift
+        ;;
+    --verbose)
+        VERBOSE=true
+        set -x
+        shift
+        ;;
+    -e)
+        EXTRA_DOCKER_ARGS+=("-e" "$2")
+        shift 2
+        ;;
+    -w)
+        CUSTOM_WORKDIR="$2"
+        shift 2
+        ;;
+    --name)
+        CONTAINER_NAME="$2"
+        shift 2
+        ;;
+    --)
+        shift
+        COMMAND_OVERRIDE=("$@")
+        break
+        ;;
+    *)
+        # If not an option, treat remainder as command
+        COMMAND_OVERRIDE=("$@")
+        break
+        ;;
+    esac
+done
+
+# --- Determine Image ---
+case "$CONTAINER_VARIANT" in
+clang)
+    IMAGE="${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}"
+    DEFAULT_CC="${DEFAULT_CC:-clang}"
+    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
+    ;;
+clang-tsan)
+    IMAGE="${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}"
+    DEFAULT_CC="${DEFAULT_CC:-clang}"
+    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
+    ;;
+clang++ | clangpp)
+    IMAGE="${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}"
+    DEFAULT_CC="${DEFAULT_CC:-clang}"
+    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
+    ;;
+*)
+    echo "Unknown variant: $CONTAINER_VARIANT" >&2
+    echo "Valid variants: clang, clang-tsan, clang++" >&2
+    exit 1
+    ;;
+esac
+
+BUILD_SCRIPT="$SCRIPT_DIR/build-devcontainer.sh"
+
+# Rebuild image if explicitly requested or if image does not exist locally
+if [ "$REBUILD" = true ]; then
+    echo "Rebuilding devcontainer image for variant '$CONTAINER_VARIANT'..."
+    if [ -f "$BUILD_SCRIPT" ]; then
+        BUILD_ARGS=("$CONTAINER_VARIANT")
+        if [ "$VERBOSE" = true ]; then
+            BUILD_ARGS+=("--verbose")
+        fi
+        "$BUILD_SCRIPT" "${BUILD_ARGS[@]}"
+    else
+        echo "Build script not found at '$BUILD_SCRIPT'. Cannot rebuild image." >&2
+        exit 1
+    fi
+elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "Image '$IMAGE' not found locally."
+    echo "Attempting to build it..."
+    if [ -f "$BUILD_SCRIPT" ]; then
+        BUILD_ARGS=("$CONTAINER_VARIANT")
+        if [ "$VERBOSE" = true ]; then
+            BUILD_ARGS+=("--verbose")
+        fi
+        "$BUILD_SCRIPT" "${BUILD_ARGS[@]}"
+    else
+        echo "Build script not found at '$BUILD_SCRIPT'. Please build the image first." >&2
+        exit 1
+    fi
+fi
+
+# --- Host User & Paths ---
+HOST_USER="$(id -un)"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+HOST_HOME="$HOME"
+CURRENT_DIR="$(pwd)"
+WORKDIR="${CUSTOM_WORKDIR:-$CURRENT_DIR}"
+
+# Handle --stop request
+if [ "$STOP_CONTAINER" = true ]; then
+    TARGET_CID=""
+    if [ -n "$CONTAINER_NAME" ]; then
+        if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
+            TARGET_CID="$CONTAINER_NAME"
+        fi
+    else
+        for cid in $(docker ps --filter "status=running" --format '{{.ID}}'); do
+            IFS=$'\t' read -r cdir clabel <<< "$(docker inspect --format $'{{.Config.WorkingDir}}\t{{index .Config.Labels "devcontainer"}}' "$cid" 2>/dev/null || true)"
+            if [ "$clabel" = "true" ] && [ "$cdir" = "$WORKDIR" ]; then
+                TARGET_CID="$cid"
+                break
+            fi
+        done
+    fi
+
+    if [ -n "$TARGET_CID" ]; then
+        echo "Stopping devcontainer ($TARGET_CID) for '$WORKDIR'..."
+        docker stop "$TARGET_CID"
+        exit 0
+    else
+        echo "No running devcontainer found for '$WORKDIR'." >&2
+        exit 1
+    fi
+fi
+
+# Determine Git project root if applicable
+GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+# Sanitize variant name for Docker volume naming (e.g. clang++ -> clangpp)
+SAFE_VARIANT="$(echo -n "$CONTAINER_VARIANT" | tr -c 'a-zA-Z0-9_.-' '_')"
+
+# Docker Volume Names for data isolation between host OS (macOS/Darwin) and container (Linux)
+VOLUME_LOCAL="${VOLUME_LOCAL:-${DEV_CONTAINER_VOLUME_LOCAL:-devcontainer_local}}"
+VOLUME_CONFIG="${VOLUME_CONFIG:-${DEV_CONTAINER_VOLUME_CONFIG:-devcontainer_config}}"
+VOLUME_CACHE="${VOLUME_CACHE:-${DEV_CONTAINER_VOLUME_CACHE:-devcontainer_cache}}"
+
+# Ensure Docker volumes exist
+docker volume inspect "$VOLUME_LOCAL" >/dev/null 2>&1 || docker volume create "$VOLUME_LOCAL" >/dev/null
+docker volume inspect "$VOLUME_CONFIG" >/dev/null 2>&1 || docker volume create "$VOLUME_CONFIG" >/dev/null
+docker volume inspect "$VOLUME_CACHE" >/dev/null 2>&1 || docker volume create "$VOLUME_CACHE" >/dev/null
+
+# Configuration initialization: guarded behind --init-config
+if [ "$INIT_CONFIG" = true ]; then
+    echo "Initializing '${VOLUME_CONFIG}' volume with host configurations..."
+    CONFIG_MOUNTS=()
+    [ -d "$HOST_HOME/.config/fish" ] && CONFIG_MOUNTS+=("-v" "$HOST_HOME/.config/fish:/src/fish:ro")
+    [ -d "$HOST_HOME/.config/tmux" ] && CONFIG_MOUNTS+=("-v" "$HOST_HOME/.config/tmux:/src/tmux:ro")
+    [ -d "$HOST_HOME/.config/nvim" ] && CONFIG_MOUNTS+=("-v" "$HOST_HOME/.config/nvim:/src/nvim:ro")
+    if [ ${#CONFIG_MOUNTS[@]} -gt 0 ]; then
+        docker run --rm \
+            -v "${VOLUME_CONFIG}:/dest" \
+            "${CONFIG_MOUNTS[@]}" \
+            "$IMAGE" \
+            bash -c '
+                [ -d /src/fish ] && mkdir -p /dest/fish && cp -a /src/fish/. /dest/fish/
+                [ -d /src/tmux ] && mkdir -p /dest/tmux && cp -a /src/tmux/. /dest/tmux/
+                [ -d /src/nvim ] && mkdir -p /dest/nvim && cp -a /src/nvim/. /dest/nvim/
+                chown -R '"$HOST_UID:$HOST_GID"' /dest 2>/dev/null || true
+            '
+        echo "Configurations copied successfully into '${VOLUME_CONFIG}'."
+    else
+        echo "Warning: No host configuration directories found in '$HOST_HOME/.config'." >&2
+    fi
+else
+    # Check if config folders in VOLUME_CONFIG are empty or missing
+    if ! docker run --rm -v "${VOLUME_CONFIG}:/dest:ro" "$IMAGE" bash -c '
+        for cfg in fish tmux nvim; do
+            if [ ! -d "/dest/$cfg" ] || [ -z "$(ls -A "/dest/$cfg" 2>/dev/null)" ]; then
+                exit 1
+            fi
+        done
+    ' 2>/dev/null; then
+        echo "Warning: Configuration folders (fish, tmux, nvim) in '${VOLUME_CONFIG}' are empty or missing." >&2
+        echo "Pass --init-config to copy them from your host (~/.config/)." >&2
+    fi
+fi
+
+# Symbolizer, sanitizer & runtime settings from settings.env (or defaults)
+SYMBOLIZER_PATH="${SYMBOLIZER_PATH:-/usr/local/bin/llvm-symbolizer}"
+DEV_TIMEZONE="${DEV_TIMEZONE:-Europe/Berlin}"
+ASAN_OPTIONS="${ASAN_OPTIONS:-detect_container_overflow=0:detect_leaks=1:symbolize=1}"
+TSAN_OPTIONS="${TSAN_OPTIONS:-external_symbolizer_path=${SYMBOLIZER_PATH}:symbolize=1:halt_on_error=1:second_deadlock_stack=1:ignore_noninstrumented_modules=1:die_after_fork=0}"
+
+# --- Assemble Docker Arguments ---
+DOCKER_RUN_ARGS=(
+    "--rm"
+    "--init"
+    "--label" "devcontainer=true"
+    "-w" "$WORKDIR"
+)
+
+# Apply base docker run arguments from settings.env (or default flags)
+if [ -n "${DOCKER_RUN_BASE_ARGS+x}" ] && [ ${#DOCKER_RUN_BASE_ARGS[@]} -gt 0 ]; then
+    DOCKER_RUN_ARGS+=("${DOCKER_RUN_BASE_ARGS[@]}")
+else
+    DOCKER_RUN_ARGS+=(
+        "--privileged"
+        "--cap-add=SYS_PTRACE"
+        "--cap-add=PERFMON"
+        "--security-opt" "seccomp=unconfined"
+        "--net=host"
+    )
+fi
+
+# Apply extra docker run arguments configured in settings.env
+if [ -n "${DOCKER_RUN_EXTRA_ARGS+x}" ] && [ ${#DOCKER_RUN_EXTRA_ARGS[@]} -gt 0 ]; then
+    DOCKER_RUN_ARGS+=("${DOCKER_RUN_EXTRA_ARGS[@]}")
+fi
+
+# Container name
+if [ -n "$CONTAINER_NAME" ]; then
+    DOCKER_RUN_ARGS+=("--name" "$CONTAINER_NAME")
+fi
+
+# Isolated Docker volumes for ~/.local, ~/.config, and ~/.cache
+DOCKER_RUN_ARGS+=(
+    "-v" "${VOLUME_LOCAL}:${HOST_HOME}/.local"
+    "-v" "${VOLUME_CONFIG}:${HOST_HOME}/.config"
+    "-v" "${VOLUME_CACHE}:${HOST_HOME}/.cache"
+)
+
+# Always mount projects directory if configured
+PROJECTS_DIR="${PROJECTS_DIR:-$HOST_HOME/projects}"
+if [ -n "$PROJECTS_DIR" ]; then
+    mkdir -p "$PROJECTS_DIR"
+    DOCKER_RUN_ARGS+=(
+        "-v" "$PROJECTS_DIR:$PROJECTS_DIR"
+    )
+fi
+
+# Mount current project working directory
+DOCKER_RUN_ARGS+=(
+    "-v" "$WORKDIR:$WORKDIR"
+    "-v" "/etc/hosts:/etc/hosts:ro"
+)
+
+# Mount Git project root if different from workdir
+if [ -n "$GIT_ROOT" ] && [ "$GIT_ROOT" != "$WORKDIR" ] && [ -d "$GIT_ROOT" ]; then
+    DOCKER_RUN_ARGS+=("-v" "$GIT_ROOT:$GIT_ROOT")
+fi
+
+# Mount TMPDIR if defined
+if [ -n "$TMPDIR" ] && [ -d "$TMPDIR" ]; then
+    DOCKER_RUN_ARGS+=("-v" "$TMPDIR:$TMPDIR")
+fi
+
+# Mount host git configuration and SSH if available
+if [ -f "$HOST_HOME/.gitconfig" ]; then
+    DOCKER_RUN_ARGS+=("-v" "$HOST_HOME/.gitconfig:$HOST_HOME/.gitconfig:ro")
+fi
+if [ -d "$HOST_HOME/.ssh" ]; then
+    DOCKER_RUN_ARGS+=("-v" "$HOST_HOME/.ssh:$HOST_HOME/.ssh:ro")
+fi
+if [ -n "$SSH_AUTH_SOCK" ] && [ -e "$SSH_AUTH_SOCK" ]; then
+    DOCKER_RUN_ARGS+=("-v" "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" "-e" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+fi
+
+# Ccache configuration if available
+if [ -d "$HOST_HOME/.ccache" ]; then
+    DOCKER_RUN_ARGS+=(
+        "-e" "CCACHE_DIR=${HOST_HOME}/.ccache"
+        "-e" "CCACHE_CONFIGPATH=${HOST_HOME}/.ccache/ccache.conf"
+    )
+    if [ -n "$GIT_ROOT" ]; then
+        DOCKER_RUN_ARGS+=("-e" "CCACHE_BASEDIR=${GIT_ROOT}/..")
+    fi
+fi
+
+# Base Environment Variables
+DOCKER_RUN_ARGS+=(
+    "-e" "DEV_USER=${HOST_USER}"
+    "-e" "DEV_UID=${HOST_UID}"
+    "-e" "DEV_GID=${HOST_GID}"
+    "-e" "DEV_HOME=${HOST_HOME}"
+    "-e" "PATH=${HOST_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "-e" "EDITOR=${EDITOR:-nvim}"
+    "-e" "VISUAL=${VISUAL:-nvim}"
+    "-e" "LANG=C.UTF-8"
+    "-e" "LC_ALL=C.UTF-8"
+    "-e" "TERM=${TERM:-xterm-256color}"
+    "-e" "COLORTERM=${COLORTERM:-truecolor}"
+    "-e" "CC=${DEFAULT_CC}"
+    "-e" "CXX=${DEFAULT_CXX}"
+    "-e" "ASAN_SYMBOLIZER_PATH=${SYMBOLIZER_PATH}"
+    "-e" "LLVM_SYMBOLIZER_PATH=${SYMBOLIZER_PATH}"
+    "-e" "ASAN_OPTIONS=${ASAN_OPTIONS}"
+    "-e" "TSAN_OPTIONS=${TSAN_OPTIONS}"
+    "-e" "TZ=${DEV_TIMEZONE}"
+)
+
+# If in a git repository with tsan.supp, pass suppressions
+if [ -n "$GIT_ROOT" ] && [ -f "$GIT_ROOT/tsan.supp" ]; then
+    DOCKER_RUN_ARGS+=("-e" "TSAN_OPTIONS=external_symbolizer_path=${SYMBOLIZER_PATH}:symbolize=1:halt_on_error=1:second_deadlock_stack=1:ignore_noninstrumented_modules=1:die_after_fork=0:suppressions=${GIT_ROOT}/tsan.supp")
+fi
+
+if [ "$AS_ROOT" = true ]; then
+    DOCKER_RUN_ARGS+=("-e" "DEV_USER=root")
+fi
+
+# Append any extra user-specified docker arguments
+if [ ${#EXTRA_DOCKER_ARGS[@]} -gt 0 ]; then
+    DOCKER_RUN_ARGS+=("${EXTRA_DOCKER_ARGS[@]}")
+fi
+
+# Handle execution: foreground command vs. detached container + attach
+if [ ${#COMMAND_OVERRIDE[@]} -gt 0 ]; then
+    # Command explicitly provided: run directly in foreground
+    if [ -t 0 ] && [ -t 1 ]; then
+        DOCKER_RUN_ARGS+=("-it")
+    else
+        DOCKER_RUN_ARGS+=("-i")
+    fi
+    exec docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE" "${COMMAND_OVERRIDE[@]}"
+fi
+
+# No command explicitly provided:
+# Start container with -d (if not already running) and attach using attach-dev-container
+CONTAINER_CMD=()
+case "$SHELL_MODE" in
+nvim)
+    CONTAINER_CMD=("nvim")
+    ;;
+fish)
+    CONTAINER_CMD=("fish")
+    ;;
+tmux)
+    # Session name derived from current directory
+    SESSION_NAME="$(basename "$WORKDIR" | tr '.' '_')"
+    CONTAINER_CMD=("tmux" "new-session" "-A" "-s" "$SESSION_NAME" "fish")
+    ;;
+esac
+
+TARGET_CID=""
+
+if [ -n "$CONTAINER_NAME" ]; then
+    if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ]; then
+        TARGET_CID="$CONTAINER_NAME"
+    fi
+else
+    # Find running devcontainer with same working directory and matching image
+    for cid in $(docker ps --filter "status=running" --format '{{.ID}}'); do
+        IFS=$'\t' read -r cdir clabel cimage <<< "$(docker inspect --format $'{{.Config.WorkingDir}}\t{{index .Config.Labels "devcontainer"}}\t{{.Config.Image}}' "$cid" 2>/dev/null || true)"
+        if [ "$clabel" = "true" ] && [ "$cdir" = "$WORKDIR" ] && [ "$cimage" = "$IMAGE" ]; then
+            TARGET_CID="$cid"
+            break
+        fi
+    done
+fi
+
+if [ -n "$TARGET_CID" ] && [ "$REBUILD" = true ]; then
+    echo "Rebuild requested. Stopping existing container ($TARGET_CID)..."
+    docker stop "$TARGET_CID" >/dev/null 2>&1 || true
+    TARGET_CID=""
+fi
+
+if [ -z "$TARGET_CID" ]; then
+    echo "Starting devcontainer in background..."
+    if ! TARGET_CID=$(docker run -d "${DOCKER_RUN_ARGS[@]}" "$IMAGE" sleep infinity); then
+        echo "Error: Failed to start devcontainer." >&2
+        exit 1
+    fi
+fi
+
+# Find attach script
+ATTACH_SCRIPT="$SCRIPT_DIR/attach-dev-container"
+if [ ! -x "$ATTACH_SCRIPT" ]; then
+    ATTACH_SCRIPT="attach-dev-container"
+fi
+
+ATTACH_ARGS=()
+[ "$AS_ROOT" = true ] && ATTACH_ARGS+=("--root")
+[ -n "$CUSTOM_WORKDIR" ] && ATTACH_ARGS+=("-w" "$CUSTOM_WORKDIR")
+ATTACH_ARGS+=("$TARGET_CID" "--" "${CONTAINER_CMD[@]}")
+
+exec "$ATTACH_SCRIPT" "${ATTACH_ARGS[@]}"

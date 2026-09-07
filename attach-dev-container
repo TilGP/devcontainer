@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# attach-dev-container: Attach to a running devcontainer with a new fish shell.
+# If only one devcontainer is running, attaches directly without prompting.
+# If multiple devcontainers are running, provides an interactive picker.
+
+set -e
+
+SCRIPT_DIR="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
+
+# Load settings from settings.env if available
+SETTINGS_FILE="${DEVCONTAINER_SETTINGS_FILE:-$SCRIPT_DIR/settings.env}"
+if [ -f "$SETTINGS_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$SETTINGS_FILE"
+fi
+
+CONTAINER_TARGET=""
+AS_ROOT=false
+CUSTOM_USER=""
+CUSTOM_WORKDIR=""
+USE_MENU=false
+COMMAND_OVERRIDE=()
+
+show_help() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [CONTAINER] [-- COMMAND...]
+
+Attaches to a running devcontainer by spawning a new shell (default: fish).
+If only one devcontainer is running, attaches directly without a picker.
+If multiple devcontainers are running, provides an interactive picker.
+
+Arguments:
+  CONTAINER          Optional name or ID of container to attach to directly
+
+Options:
+  --root             Attach as root instead of the dev user
+  -u, --user USER    Specify user to run as
+  -w DIR             Set custom working directory inside container
+  --menu             Use numbered text menu instead of fzf
+  -h, --help         Show this help message
+
+Examples:
+  $(basename "$0")                    # Auto-attach or pick from running containers
+  $(basename "$0") my-container       # Attach directly to specific container
+  $(basename "$0") --root             # Attach as root
+  $(basename "$0") -- htop            # Run htop inside the container
+EOF
+}
+
+# --- Parse Arguments ---
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        --root)
+            AS_ROOT=true
+            shift
+            ;;
+        -u|--user)
+            CUSTOM_USER="$2"
+            shift 2
+            ;;
+        -w|--workdir)
+            CUSTOM_WORKDIR="$2"
+            shift 2
+            ;;
+        --menu|--no-fzf)
+            USE_MENU=true
+            shift
+            ;;
+        --)
+            shift
+            COMMAND_OVERRIDE=("$@")
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            show_help >&2
+            exit 1
+            ;;
+        *)
+            if [ -z "$CONTAINER_TARGET" ]; then
+                CONTAINER_TARGET="$1"
+                shift
+            else
+                COMMAND_OVERRIDE=("$@")
+                break
+            fi
+            ;;
+    esac
+done
+
+# --- Find Running Devcontainers ---
+ALL_RUNNING_CIDS=$(docker ps --filter "status=running" --format '{{.ID}}')
+
+CONTAINER_IDS=()
+CONTAINER_NAMES=()
+CONTAINER_IMAGES=()
+CONTAINER_WORKDIR=()
+CONTAINER_STATUS=()
+CONTAINER_USERS=()
+
+for cid in $ALL_RUNNING_CIDS; do
+    # Extract metadata using tab separation
+    IFS=$'\t' read -r cname cimage cworkdir clabel cmounts <<< "$(docker inspect --format $'{{.Name}}\t{{.Config.Image}}\t{{.Config.WorkingDir}}\t{{index .Config.Labels "devcontainer"}}\t{{range .Mounts}}{{.Name}} {{end}}' "$cid" 2>/dev/null || true)"
+    cname="${cname#/}"
+
+    # Match devcontainers by explicit label, configured image tags, or devcontainer naming
+    is_devcontainer=false
+    if [ "$clabel" = "true" ]; then
+        is_devcontainer=true
+    elif [ "$cimage" = "${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}" ] || \
+         [ "$cimage" = "${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}" ] || \
+         [ "$cimage" = "${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}" ] || \
+         [[ "$cimage" == *devcontainer* ]] || \
+         [[ "$cmounts" == *devcontainer_* ]] || \
+         [[ "$cmounts" == *"${VOLUME_LOCAL:-devcontainer_local}"* ]]; then
+        is_devcontainer=true
+    fi
+
+    if [ "$is_devcontainer" = true ]; then
+        cuser=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null | awk -F= '$1=="DEV_USER"{print $2}')
+        cstatus=$(docker ps --filter "id=$cid" --format '{{.Status}}' 2>/dev/null || echo "running")
+
+        CONTAINER_IDS+=("$cid")
+        CONTAINER_NAMES+=("$cname")
+        CONTAINER_IMAGES+=("$cimage")
+        CONTAINER_WORKDIR+=("${cworkdir:-/}")
+        CONTAINER_STATUS+=("${cstatus}")
+        CONTAINER_USERS+=("${cuser:-}")
+    fi
+done
+
+COUNT=${#CONTAINER_IDS[@]}
+
+# --- Select Target Container ---
+SELECTED_CID=""
+SELECTED_NAME=""
+SELECTED_WORKDIR=""
+SELECTED_USER=""
+
+if [ -n "$CONTAINER_TARGET" ]; then
+    # Target explicitly provided on command line
+    for i in "${!CONTAINER_IDS[@]}"; do
+        if [ "${CONTAINER_IDS[i]}" = "$CONTAINER_TARGET" ] || [ "${CONTAINER_NAMES[i]}" = "$CONTAINER_TARGET" ] || [[ "${CONTAINER_IDS[i]}" == "${CONTAINER_TARGET}"* ]]; then
+            SELECTED_CID="${CONTAINER_IDS[i]}"
+            SELECTED_NAME="${CONTAINER_NAMES[i]}"
+            SELECTED_WORKDIR="${CONTAINER_WORKDIR[i]}"
+            SELECTED_USER="${CONTAINER_USERS[i]}"
+            break
+        fi
+    done
+
+    if [ -z "$SELECTED_CID" ]; then
+        # Check if it exists as any running docker container
+        if docker inspect "$CONTAINER_TARGET" >/dev/null 2>&1; then
+            SELECTED_CID="$CONTAINER_TARGET"
+            SELECTED_NAME="$(docker inspect --format '{{.Name}}' "$SELECTED_CID" | sed 's|^/||')"
+            SELECTED_WORKDIR="$(docker inspect --format '{{.Config.WorkingDir}}' "$SELECTED_CID")"
+            SELECTED_USER="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$SELECTED_CID" 2>/dev/null | awk -F= '$1=="DEV_USER"{print $2}')"
+        else
+            echo "Error: Container '$CONTAINER_TARGET' not found or is not running." >&2
+            exit 1
+        fi
+    fi
+
+elif [ "$COUNT" -eq 0 ]; then
+    echo "No running devcontainers found." >&2
+    echo "You can start one using: start-dev-container" >&2
+    exit 1
+
+elif [ "$COUNT" -eq 1 ]; then
+    # Exactly one running devcontainer: don't show picker
+    SELECTED_CID="${CONTAINER_IDS[0]}"
+    SELECTED_NAME="${CONTAINER_NAMES[0]}"
+    SELECTED_WORKDIR="${CONTAINER_WORKDIR[0]}"
+    SELECTED_USER="${CONTAINER_USERS[0]}"
+
+else
+    # Multiple devcontainers running: show picker
+    TTY_DEV=""
+    if true 2>/dev/null < /dev/tty; then
+        TTY_DEV="/dev/tty"
+    elif [ -t 0 ]; then
+        TTY_DEV="/dev/stdin"
+    fi
+
+    if [ "$USE_MENU" = false ] && command -v fzf >/dev/null 2>&1 && [ "$TTY_DEV" = "/dev/tty" ]; then
+        # Use fzf for interactive selection
+        FZF_LINES=()
+        for i in "${!CONTAINER_IDS[@]}"; do
+            cid="${CONTAINER_IDS[i]}"
+            name="${CONTAINER_NAMES[i]}"
+            image="${CONTAINER_IMAGES[i]}"
+            wdir="${CONTAINER_WORKDIR[i]/#$HOME/~}"
+            stat="${CONTAINER_STATUS[i]}"
+            line=$(printf "%-22s  %-30s  %-35s  %-18s  [%s]" "$name" "$image" "$wdir" "$stat" "$cid")
+            FZF_LINES+=("$line")
+        done
+
+        SELECTED_RAW=$(printf '%s\n' "${FZF_LINES[@]}" | fzf \
+            --prompt="Select devcontainer to attach > " \
+            --header="NAME                    IMAGE                           WORKDIR                              STATUS              ID" \
+            --reverse \
+            --height=40% \
+            --ansi) || true
+
+        if [ -z "$SELECTED_RAW" ]; then
+            echo "Selection cancelled." >&2
+            exit 0
+        fi
+
+        # Extract container ID from the selected line (inside brackets at the end)
+        CHOSEN_CID=$(echo "$SELECTED_RAW" | grep -o -E '\[[a-f0-9]+\]' | tr -d '[]')
+        for i in "${!CONTAINER_IDS[@]}"; do
+            if [ "${CONTAINER_IDS[i]}" = "$CHOSEN_CID" ]; then
+                SELECTED_CID="${CONTAINER_IDS[i]}"
+                SELECTED_NAME="${CONTAINER_NAMES[i]}"
+                SELECTED_WORKDIR="${CONTAINER_WORKDIR[i]}"
+                SELECTED_USER="${CONTAINER_USERS[i]}"
+                break
+            fi
+        done
+    else
+        # Fallback numbered menu
+        echo "Multiple running devcontainers detected:"
+        echo
+        for i in "${!CONTAINER_IDS[@]}"; do
+            idx=$((i + 1))
+            name="${CONTAINER_NAMES[i]}"
+            image="${CONTAINER_IMAGES[i]}"
+            wdir="${CONTAINER_WORKDIR[i]/#$HOME/~}"
+            stat="${CONTAINER_STATUS[i]}"
+            printf "  [%d] %-20s  %-28s  %s (%s)\n" "$idx" "$name" "$image" "$wdir" "$stat"
+        done
+        echo
+
+        SELECTED_INDEX=0
+        while true; do
+            if [ -n "$TTY_DEV" ]; then
+                read -r -p "Select container (1-${COUNT}) [default: 1]: " choice < "$TTY_DEV"
+            else
+                if ! read -r choice; then
+                    echo "Non-interactive shell with no input: defaulting to container [1]." >&2
+                    choice="1"
+                fi
+            fi
+            choice="${choice:-1}"
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$COUNT" ]; then
+                SELECTED_INDEX=$((choice - 1))
+                break
+            else
+                echo "Invalid choice. Please enter a number between 1 and ${COUNT}." >&2
+                [ -z "$TTY_DEV" ] && break
+            fi
+        done
+
+        SELECTED_CID="${CONTAINER_IDS[SELECTED_INDEX]}"
+        SELECTED_NAME="${CONTAINER_NAMES[SELECTED_INDEX]}"
+        SELECTED_WORKDIR="${CONTAINER_WORKDIR[SELECTED_INDEX]}"
+        SELECTED_USER="${CONTAINER_USERS[SELECTED_INDEX]}"
+    fi
+fi
+
+# --- Determine Execution Context ---
+EXEC_USER=""
+if [ "$AS_ROOT" = true ]; then
+    EXEC_USER="root"
+elif [ -n "$CUSTOM_USER" ]; then
+    EXEC_USER="$CUSTOM_USER"
+elif [ -n "$SELECTED_USER" ]; then
+    EXEC_USER="$SELECTED_USER"
+fi
+
+EXEC_WORKDIR="${CUSTOM_WORKDIR:-$SELECTED_WORKDIR}"
+
+# Default command: fish
+CMD=("fish")
+if [ ${#COMMAND_OVERRIDE[@]} -gt 0 ]; then
+    CMD=("${COMMAND_OVERRIDE[@]}")
+fi
+
+DOCKER_EXEC_ARGS=()
+
+if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_EXEC_ARGS+=("-it")
+else
+    DOCKER_EXEC_ARGS+=("-i")
+fi
+
+if [ -n "$EXEC_USER" ]; then
+    DOCKER_EXEC_ARGS+=("-u" "$EXEC_USER")
+fi
+
+if [ -n "$EXEC_WORKDIR" ]; then
+    DOCKER_EXEC_ARGS+=("-w" "$EXEC_WORKDIR")
+fi
+
+c_home=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$SELECTED_CID" 2>/dev/null | awk -F= '$1=="DEV_HOME"{print $2}')
+if [ -n "$EXEC_USER" ]; then
+    if [ "$EXEC_USER" = "root" ]; then
+        EXEC_HOME="/root"
+    else
+        EXEC_HOME="${c_home:-/home/$EXEC_USER}"
+    fi
+    DOCKER_EXEC_ARGS+=(
+        "-e" "USER=${EXEC_USER}"
+        "-e" "HOME=${EXEC_HOME}"
+        "-e" "PATH=${EXEC_HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+elif [ -n "$c_home" ]; then
+    DOCKER_EXEC_ARGS+=(
+        "-e" "HOME=${c_home}"
+        "-e" "PATH=${c_home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+fi
+
+DOCKER_EXEC_ARGS+=(
+    "-e" "EDITOR=nvim"
+    "-e" "VISUAL=nvim"
+    "-e" "TERM=${TERM:-xterm-256color}"
+    "-e" "COLORTERM=${COLORTERM:-truecolor}"
+)
+
+# Inform user if interactive
+if [ -t 1 ]; then
+    DISPLAY_DIR="${EXEC_WORKDIR/#$HOME/~}"
+    USER_INFO=""
+    [ -n "$EXEC_USER" ] && USER_INFO=" as user '$EXEC_USER'"
+    echo "Attaching to devcontainer '$SELECTED_NAME' ($DISPLAY_DIR)${USER_INFO}..."
+fi
+
+exec docker exec "${DOCKER_EXEC_ARGS[@]}" "$SELECTED_CID" "${CMD[@]}"
