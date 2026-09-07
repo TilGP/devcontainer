@@ -382,7 +382,17 @@ if [ -d "$HOST_HOME/.ssh" ]; then
     DOCKER_RUN_ARGS+=("-v" "$HOST_HOME/.ssh:$HOST_HOME/.ssh:ro")
 fi
 if [ -n "$SSH_AUTH_SOCK" ] && [ -e "$SSH_AUTH_SOCK" ]; then
-    DOCKER_RUN_ARGS+=("-v" "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" "-e" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+    if [ "$(uname -s)" = "Darwin" ]; then
+        # On macOS (Docker Desktop / OrbStack), host Unix sockets cannot be bind-mounted
+        # directly from /var/run into Linux containers without permission / path issues.
+        # Instead, Docker Desktop and OrbStack provide a VM bridge socket at /run/host-services/ssh-auth.sock.
+        DOCKER_RUN_ARGS+=(
+            "-v" "/run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock"
+            "-e" "SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock"
+        )
+    else
+        DOCKER_RUN_ARGS+=("-v" "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" "-e" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+    fi
 fi
 
 # Ccache configuration if available
