@@ -11,11 +11,11 @@ RUN apt-get update -qq && \
     bpython \
     ca-certificates \
     curl \
-    delta \
     direnv \
     fd-find \
     fzf \
     git \
+    git-delta \
     git-lfs \
     gosu \
     groff \
@@ -45,11 +45,11 @@ RUN apt-get update -qq && \
 
 # Symlink cc/c++ to detected toolchain and fd to fdfind
 RUN if [ -f /usr/local/bin/clang ]; then \
-        ln -sf /usr/local/bin/clang /usr/local/bin/cc && \
-        ln -sf /usr/local/bin/clang++ /usr/local/bin/c++; \
+    ln -sf /usr/local/bin/clang /usr/local/bin/cc && \
+    ln -sf /usr/local/bin/clang++ /usr/local/bin/c++; \
     elif [ -f /usr/local/bin/gcc ]; then \
-        ln -sf /usr/local/bin/gcc /usr/local/bin/cc && \
-        ln -sf /usr/local/bin/g++ /usr/local/bin/c++; \
+    ln -sf /usr/local/bin/gcc /usr/local/bin/cc && \
+    ln -sf /usr/local/bin/g++ /usr/local/bin/c++; \
     fi && \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/kitty && \
