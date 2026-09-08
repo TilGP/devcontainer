@@ -91,6 +91,12 @@ RUN set -ex; \
     ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
     /usr/local/bin/nvim --version | head -2
 
+
+# insatll uv
+RUN set -ex; \
+    curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/u* /usr/bin/
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
