@@ -13,7 +13,7 @@ won't match outside of my setup.
 - **Fish & Tmux Integration:** Initial run automatically copies host configurations from `~/.config/fish`, `~/.config/tmux`, and `~/.config/nvim` into the container config volume, allowing custom in-container tweaks without affecting the macOS host.
 - **Isolated Linux Environment:** Dedicated Docker named volumes (`devcontainer_local`, `devcontainer_config`, `devcontainer_cache`, `devcontainer_cursor`) isolate all `.local`, `.config`, `.cache`, and `.cursor` directories (such as Treesitter `.so` parsers, Mason binaries, shell data, and Cursor CLI state) from macOS binaries.
 - **Clean Project Mounts:** Always mounts `$HOME/projects` as well as the current project working directory, Git root, and essential configs (`.gitconfig`, `.ssh`).
-- **Compiler Variants:** Provides `clang`, `clang-tsan` (ThreadSanitizer-instrumented), and `clang++`.
+- **Compiler Variants:** Configurable via `VARIANTS` in `settings.env` (defaults: `clang`, `clang-tsan`, and `gcc`).
 - **Project Independent:** Can be placed in `PATH` (e.g. `~/.local/bin/`) and launched from any project folder.
 
 ---
@@ -28,7 +28,7 @@ Run the build script to create the container images for your architecture (`aarc
 # Build the default clang variant
 ./tools/docker/devcontainer/build-devcontainer.sh clang
 
-# Or build all variants (clang, clang-tsan, clang++)
+# Or build all configured variants (clang, clang-tsan, gcc)
 ./tools/docker/devcontainer/build-devcontainer.sh all
 ```
 
@@ -61,8 +61,8 @@ start-dev-container --fish
 # Use TSan variant
 start-dev-container --clang-tsan
 
-# Use Clang++ variant
-start-dev-container --clang++
+# Use GCC variant
+start-dev-container --gcc
 
 # Rebuild container image
 start-dev-container --re-build
@@ -110,8 +110,8 @@ cp settings.env.dist settings.env
 
 You can customize the devcontainer environment by editing `settings.env` directly:
 
-- **Base Images & Registry:** Change `REGISTRY`, `BASE_IMAGE_CLANG`, `BASE_IMAGE_CLANG_TSAN`, `BASE_IMAGE_CLANGPP`, or provide a global `BASE_IMAGE`.
-- **Image Names & Tags:** Adjust `IMAGE_TAG_CLANG`, `IMAGE_TAG_CLANG_TSAN`, `IMAGE_TAG_CLANGPP`.
+- **Compiler Variants:** Configure available toolchain variants in the `VARIANTS` array (e.g. `clang`, `clang-tsan`, `gcc`).
+- **Base Images & Registry:** Change `REGISTRY` or provide a global `BASE_IMAGE` override.
 - **Default Variant & Mode:** Set `DEFAULT_CONTAINER_VARIANT="clang"` and `DEFAULT_SHELL_MODE="tmux"`.
 - **Docker Run Arguments:** Customize `DOCKER_RUN_BASE_ARGS` or add custom flags (e.g. port forwards, GPU flags) to `DOCKER_RUN_EXTRA_ARGS`.
 - **Volumes & Mounts:** Configure isolated Docker volumes and host mounts in `VOLUMES`, or customize `PROJECTS_DIR`. All named volumes are auto-created and initialized with proper user ownership.
@@ -126,11 +126,11 @@ Override the settings file location by setting the `DEVCONTAINER_SETTINGS_FILE` 
 ```
 Usage: start-dev-container [OPTIONS] [-- COMMAND...]
 
-Variants:
-  --clang            Use standard Clang toolchain (default)
-  --clang-tsan       Use TSan-instrumented Clang toolchain
-  --clang++          Use Clang C++ toolchain (sets CXX=clang++)
-  -v, --variant VAR  Specify variant explicitly: clang, clang-tsan, clang++, clangpp
+Variants (configured in settings.env):
+  -v, --variant VAR  Specify variant explicitly (default: clang)
+  --clang            Use clang toolchain variant
+  --clang-tsan       Use clang-tsan toolchain variant
+  --gcc              Use gcc toolchain variant
 
 Modes:
   --tmux             Start inside a tmux session (default)
@@ -160,6 +160,6 @@ Options:
 | `settings.env` | Local configuration file (gitignored, copied from `settings.env.dist`) |
 | `Dockerfile` | Multi-arch container definition with Neovim, Fish, Tmux, and dev utilities |
 | `entrypoint.sh` | Container entrypoint configuring dynamic user, UID/GID, sudo, and permissions |
-| `build-devcontainer.sh` | Builds the Docker images (`clang`, `clang-tsan`, `clang++`, or `all`) |
+| `build-devcontainer.sh` | Builds the Docker images (any configured variant, or `all`) |
 | `start-dev-container` | Project-independent launcher script to mount configs and start container |
 | `attach-dev-container` | Script to attach to running devcontainer with new fish shell and container picker |

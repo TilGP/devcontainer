@@ -14,6 +14,35 @@ if [ -f "$SETTINGS_FILE" ]; then
     source "$SETTINGS_FILE"
 fi
 
+# Fallback defaults for VARIANTS if not configured in settings.env
+if [ -z "${VARIANTS+x}" ] || [ ${#VARIANTS[@]} -eq 0 ]; then
+    VARIANTS=(
+        "clang|${BASE_IMAGE_CLANG:-${REGISTRY}/clang-22.1.8/main}|${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}|clang|clang++"
+        "clang-tsan|${BASE_IMAGE_CLANG_TSAN:-${REGISTRY}/clang-22.1.8-tsan/main}|${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}|clang|clang++"
+        "gcc|${BASE_IMAGE_GCC:-${REGISTRY}/gcc-15.3.0/main}|${IMAGE_TAG_GCC:-devcontainer-nvim:gcc}|gcc|g++"
+    )
+fi
+
+parse_variant_tag() {
+    local entry="$1"
+    local name="" base="" tag=""
+    if [[ "$entry" == *"|"* ]]; then
+        IFS="|" read -r name base tag _ <<< "$entry"
+    elif [[ "$entry" == *:* ]]; then
+        name="${entry%%:*}"
+    else
+        name="$entry"
+    fi
+    name="$(echo -n "$name" | xargs)"
+    tag="$(echo -n "$tag" | xargs)"
+    if [ -z "$tag" ]; then
+        local safe_suffix
+        safe_suffix="$(echo -n "$name" | tr -c 'a-zA-Z0-9_.-' '_')"
+        tag="devcontainer-nvim:${safe_suffix}"
+    fi
+    echo "$tag"
+}
+
 CONTAINER_TARGET=""
 AS_ROOT=false
 CUSTOM_USER=""
@@ -111,12 +140,17 @@ for cid in $ALL_RUNNING_CIDS; do
     is_devcontainer=false
     if [ "$clabel" = "true" ]; then
         is_devcontainer=true
-    elif [ "$cimage" = "${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}" ] || \
-         [ "$cimage" = "${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}" ] || \
-         [ "$cimage" = "${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}" ] || \
-         [[ "$cimage" == *devcontainer* ]] || \
-         [[ "$cmounts" == *devcontainer_* ]]; then
+    elif [[ "$cimage" == *devcontainer* ]] || [[ "$cmounts" == *devcontainer_* ]]; then
         is_devcontainer=true
+    else
+        for entry in "${VARIANTS[@]}"; do
+            [ -z "$entry" ] && continue
+            v_tag=$(parse_variant_tag "$entry")
+            if [ "$cimage" = "$v_tag" ]; then
+                is_devcontainer=true
+                break
+            fi
+        done
     fi
 
     if [ "$is_devcontainer" = true ]; then

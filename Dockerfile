@@ -43,9 +43,14 @@ RUN apt-get update -qq && \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Symlink cc/c++ to clang/clang++ and fd to fdfind
-RUN ln -sf /usr/local/bin/clang /usr/local/bin/cc && \
-    ln -sf /usr/local/bin/clang++ /usr/local/bin/c++ && \
+# Symlink cc/c++ to detected toolchain and fd to fdfind
+RUN if [ -f /usr/local/bin/clang ]; then \
+        ln -sf /usr/local/bin/clang /usr/local/bin/cc && \
+        ln -sf /usr/local/bin/clang++ /usr/local/bin/c++; \
+    elif [ -f /usr/local/bin/gcc ]; then \
+        ln -sf /usr/local/bin/gcc /usr/local/bin/cc && \
+        ln -sf /usr/local/bin/g++ /usr/local/bin/c++; \
+    fi && \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/kitty && \
     chmod +x /usr/local/bin/kitty

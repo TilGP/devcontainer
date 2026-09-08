@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for devcontainer-nvim images
-# Supports variants: clang, clang-tsan, clang++ (alias for clang with CXX default)
+# Supports variants configured in settings.env (VARIANTS array)
 
 set -e
 
@@ -33,17 +33,109 @@ fi
 
 REGISTRY="${REGISTRY:-registry.example.com/toolchain/trixie/${TOOLCHAIN_ARCH}}"
 
+# Fallback defaults for VARIANTS if not configured in settings.env
+if [ -z "${VARIANTS+x}" ] || [ ${#VARIANTS[@]} -eq 0 ]; then
+    VARIANTS=(
+        "clang|${BASE_IMAGE_CLANG:-${REGISTRY}/clang-22.1.8/main}|${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}|clang|clang++"
+        "clang-tsan|${BASE_IMAGE_CLANG_TSAN:-${REGISTRY}/clang-22.1.8-tsan/main}|${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}|clang|clang++"
+        "gcc|${BASE_IMAGE_GCC:-${REGISTRY}/gcc-15.3.0/main}|${IMAGE_TAG_GCC:-devcontainer-nvim:gcc}|gcc|g++"
+    )
+fi
+
+# Helper to parse a variant entry
+# Sets: PARSED_VARIANT_NAME, PARSED_VARIANT_BASE, PARSED_VARIANT_TAG, PARSED_VARIANT_CC, PARSED_VARIANT_CXX
+parse_variant_entry() {
+    local entry="$1"
+    local name="" base="" tag="" cc="" cxx=""
+
+    if [[ "$entry" == *"|"* ]]; then
+        IFS="|" read -r name base tag cc cxx <<< "$entry"
+    elif [[ "$entry" == *:* ]]; then
+        name="${entry%%:*}"
+        base="${entry#*:}"
+    else
+        name="$entry"
+    fi
+
+    # Trim leading/trailing whitespace
+    name="$(echo -n "$name" | xargs)"
+    base="$(echo -n "$base" | xargs)"
+    tag="$(echo -n "$tag" | xargs)"
+    cc="$(echo -n "$cc" | xargs)"
+    cxx="$(echo -n "$cxx" | xargs)"
+
+    # Base image fallback (with global override support)
+    if [ -n "$BASE_IMAGE" ]; then
+        base="$BASE_IMAGE"
+    elif [ -z "$base" ]; then
+        base="${REGISTRY}/${name}/main"
+    fi
+
+    # Image tag fallback
+    if [ -z "$tag" ]; then
+        local safe_suffix
+        safe_suffix="$(echo -n "$name" | tr -c 'a-zA-Z0-9_.-' '_')"
+        tag="devcontainer-nvim:${safe_suffix}"
+    fi
+
+    # Compiler fallbacks
+    if [ -z "$cc" ]; then
+        case "$name" in
+            *gcc*|*g++*) cc="gcc" ;;
+            *)          cc="${DEFAULT_CC:-clang}" ;;
+        esac
+    fi
+    if [ -z "$cxx" ]; then
+        case "$name" in
+            *gcc*|*g++*) cxx="g++" ;;
+            *)          cxx="${DEFAULT_CXX:-clang++}" ;;
+        esac
+    fi
+
+    PARSED_VARIANT_NAME="$name"
+    PARSED_VARIANT_BASE="$base"
+    PARSED_VARIANT_TAG="$tag"
+    PARSED_VARIANT_CC="$cc"
+    PARSED_VARIANT_CXX="$cxx"
+}
+
+find_variant() {
+    local target="$1"
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        if [ "$PARSED_VARIANT_NAME" = "$target" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_variant_names() {
+    local names=()
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        names+=("$PARSED_VARIANT_NAME")
+    done
+    echo "${names[*]}"
+}
+
 show_help() {
     cat <<EOF
 Usage: $(basename "$0") [VARIANT] [OPTIONS]
 
 Builds the devcontainer Docker image for Neovim development.
 
-Variants:
-  clang        Base clang toolchain image (default)
-  clang-tsan   TSan-instrumented clang toolchain image
-  clang++      Clang C++ variant (builds with base clang toolchain, tagged clangpp)
-  all          Build all variants
+Configured Variants (from settings.env):
+EOF
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        printf "  %-12s Tag: %-25s (Base: %s)\n" "$PARSED_VARIANT_NAME" "$PARSED_VARIANT_TAG" "$PARSED_VARIANT_BASE"
+    done
+    cat <<EOF
+  all          Build all configured variants
 
 Options:
   --no-cache   Build Docker image without cache
@@ -53,29 +145,17 @@ EOF
 }
 
 build_variant() {
-    local variant="$1"
+    local target="$1"
     local no_cache_flag="$2"
-    local base_image=""
-    local tag_name=""
 
-    case "$variant" in
-        clang)
-            base_image="${BASE_IMAGE:-${BASE_IMAGE_CLANG:-${REGISTRY}/clang-22.1.8/main}}"
-            tag_name="${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}"
-            ;;
-        clang-tsan)
-            base_image="${BASE_IMAGE:-${BASE_IMAGE_CLANG_TSAN:-${REGISTRY}/clang-22.1.8-tsan/main}}"
-            tag_name="${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}"
-            ;;
-        clang++|clangpp)
-            base_image="${BASE_IMAGE:-${BASE_IMAGE_CLANGPP:-${REGISTRY}/clang-22.1.8/main}}"
-            tag_name="${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}"
-            ;;
-        *)
-            echo "Unknown variant: $variant" >&2
-            exit 1
-            ;;
-    esac
+    if ! find_variant "$target"; then
+        echo "Error: Unknown variant '$target'." >&2
+        echo "Available variants: $(get_variant_names)" >&2
+        exit 1
+    fi
+
+    local tag_name="$PARSED_VARIANT_TAG"
+    local base_image="$PARSED_VARIANT_BASE"
 
     echo "============================================================"
     echo "Building devcontainer image: ${tag_name}"
@@ -111,22 +191,24 @@ while [ $# -gt 0 ]; do
             set -x
             shift
             ;;
-        clang|clang-tsan|clang++|clangpp|all)
-            VARIANT="$1"
-            shift
-            ;;
-        *)
-            echo "Unknown argument: $1" >&2
+        -*)
+            echo "Unknown option: $1" >&2
             show_help
             exit 1
+            ;;
+        *)
+            VARIANT="$1"
+            shift
             ;;
     esac
 done
 
 if [ "$VARIANT" = "all" ]; then
-    build_variant "clang" "$NO_CACHE"
-    build_variant "clang-tsan" "$NO_CACHE"
-    build_variant "clang++" "$NO_CACHE"
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        build_variant "$PARSED_VARIANT_NAME" "$NO_CACHE"
+    done
 else
     build_variant "$VARIANT" "$NO_CACHE"
 fi

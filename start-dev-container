@@ -21,6 +21,94 @@ if [ -f "$SETTINGS_FILE" ]; then
     source "$SETTINGS_FILE"
 fi
 
+# Fallback defaults for VARIANTS if not configured in settings.env
+if [ -z "${VARIANTS+x}" ] || [ ${#VARIANTS[@]} -eq 0 ]; then
+    VARIANTS=(
+        "clang|${BASE_IMAGE_CLANG:-${REGISTRY}/clang-22.1.8/main}|${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}|clang|clang++"
+        "clang-tsan|${BASE_IMAGE_CLANG_TSAN:-${REGISTRY}/clang-22.1.8-tsan/main}|${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}|clang|clang++"
+        "gcc|${BASE_IMAGE_GCC:-${REGISTRY}/gcc-15.3.0/main}|${IMAGE_TAG_GCC:-devcontainer-nvim:gcc}|gcc|g++"
+    )
+fi
+
+# Helper to parse a variant entry
+# Sets: PARSED_VARIANT_NAME, PARSED_VARIANT_BASE, PARSED_VARIANT_TAG, PARSED_VARIANT_CC, PARSED_VARIANT_CXX
+parse_variant_entry() {
+    local entry="$1"
+    local name="" base="" tag="" cc="" cxx=""
+
+    if [[ "$entry" == *"|"* ]]; then
+        IFS="|" read -r name base tag cc cxx <<< "$entry"
+    elif [[ "$entry" == *:* ]]; then
+        name="${entry%%:*}"
+        base="${entry#*:}"
+    else
+        name="$entry"
+    fi
+
+    # Trim leading/trailing whitespace
+    name="$(echo -n "$name" | xargs)"
+    base="$(echo -n "$base" | xargs)"
+    tag="$(echo -n "$tag" | xargs)"
+    cc="$(echo -n "$cc" | xargs)"
+    cxx="$(echo -n "$cxx" | xargs)"
+
+    # Base image fallback (with global override support)
+    if [ -n "$BASE_IMAGE" ]; then
+        base="$BASE_IMAGE"
+    elif [ -z "$base" ]; then
+        base="${REGISTRY}/${name}/main"
+    fi
+
+    # Image tag fallback
+    if [ -z "$tag" ]; then
+        local safe_suffix
+        safe_suffix="$(echo -n "$name" | tr -c 'a-zA-Z0-9_.-' '_')"
+        tag="devcontainer-nvim:${safe_suffix}"
+    fi
+
+    # Compiler fallbacks
+    if [ -z "$cc" ]; then
+        case "$name" in
+            *gcc*|*g++*) cc="gcc" ;;
+            *)          cc="${DEFAULT_CC:-clang}" ;;
+        esac
+    fi
+    if [ -z "$cxx" ]; then
+        case "$name" in
+            *gcc*|*g++*) cxx="g++" ;;
+            *)          cxx="${DEFAULT_CXX:-clang++}" ;;
+        esac
+    fi
+
+    PARSED_VARIANT_NAME="$name"
+    PARSED_VARIANT_BASE="$base"
+    PARSED_VARIANT_TAG="$tag"
+    PARSED_VARIANT_CC="$cc"
+    PARSED_VARIANT_CXX="$cxx"
+}
+
+find_variant() {
+    local target="$1"
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        if [ "$PARSED_VARIANT_NAME" = "$target" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_variant_names() {
+    local names=()
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        names+=("$PARSED_VARIANT_NAME")
+    done
+    echo "${names[*]}"
+}
+
 # --- Default Configuration ---
 CONTAINER_VARIANT="${CONTAINER_VARIANT:-${DEFAULT_CONTAINER_VARIANT:-clang}}"
 SHELL_MODE="${DEV_CONTAINER_SHELL:-${DEFAULT_SHELL_MODE:-tmux}}" # tmux, fish, or nvim
@@ -42,11 +130,15 @@ When no command is provided, the container runs in the background (-d) and
 attaches via attach-dev-container, allowing sessions to exit and reconnect
 without terminating the devcontainer.
 
-Variants:
-  --clang            Use standard Clang toolchain (default)
-  --clang-tsan       Use TSan-instrumented Clang toolchain
-  --clang++          Use Clang C++ toolchain (sets CXX=clang++)
-  -v, --variant VAR  Specify variant explicitly: clang, clang-tsan, clang++, clangpp
+Variants (configured in settings.env):
+  -v, --variant VAR  Specify variant explicitly (default: ${DEFAULT_CONTAINER_VARIANT:-clang})
+EOF
+    for entry in "${VARIANTS[@]}"; do
+        [ -z "$entry" ] && continue
+        parse_variant_entry "$entry"
+        printf "  --%-16s Use %s toolchain variant\n" "$PARSED_VARIANT_NAME" "$PARSED_VARIANT_NAME"
+    done
+    cat <<EOF
 
 Modes:
   --tmux             Start inside a tmux session (default)
@@ -67,6 +159,7 @@ Options:
 
 Examples:
   $(basename "$0")                    # Start tmux session in current directory
+  $(basename "$0") --gcc              # Start with GCC toolchain
   $(basename "$0") --clang-tsan       # Start with TSan toolchain
   $(basename "$0") --nvim             # Open Neovim directly
   $(basename "$0") --fish             # Open Fish shell directly
@@ -86,21 +179,13 @@ while [ $# -gt 0 ]; do
         show_help
         exit 0
         ;;
-    --clang)
-        CONTAINER_VARIANT="clang"
-        shift
-        ;;
-    --clang-tsan)
-        CONTAINER_VARIANT="clang-tsan"
-        shift
-        ;;
-    --clang++ | --clangpp)
-        CONTAINER_VARIANT="clang++"
-        shift
-        ;;
     -v | --variant)
         CONTAINER_VARIANT="$2"
         shift 2
+        ;;
+    --variant=*)
+        CONTAINER_VARIANT="${1#*=}"
+        shift
         ;;
     --tmux)
         SHELL_MODE="tmux"
@@ -156,6 +241,17 @@ while [ $# -gt 0 ]; do
         COMMAND_OVERRIDE=("$@")
         break
         ;;
+    --*)
+        opt_name="${1#--}"
+        if find_variant "$opt_name"; then
+            CONTAINER_VARIANT="$opt_name"
+            shift
+        else
+            echo "Unknown option: $1" >&2
+            show_help >&2
+            exit 1
+        fi
+        ;;
     *)
         # If not an option, treat remainder as command
         COMMAND_OVERRIDE=("$@")
@@ -164,29 +260,16 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# --- Determine Image ---
-case "$CONTAINER_VARIANT" in
-clang)
-    IMAGE="${IMAGE_TAG_CLANG:-devcontainer-nvim:clang}"
-    DEFAULT_CC="${DEFAULT_CC:-clang}"
-    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
-    ;;
-clang-tsan)
-    IMAGE="${IMAGE_TAG_CLANG_TSAN:-devcontainer-nvim:clang-tsan}"
-    DEFAULT_CC="${DEFAULT_CC:-clang}"
-    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
-    ;;
-clang++ | clangpp)
-    IMAGE="${IMAGE_TAG_CLANGPP:-devcontainer-nvim:clangpp}"
-    DEFAULT_CC="${DEFAULT_CC:-clang}"
-    DEFAULT_CXX="${DEFAULT_CXX:-clang++}"
-    ;;
-*)
+# --- Determine Variant & Image ---
+if ! find_variant "$CONTAINER_VARIANT"; then
     echo "Unknown variant: $CONTAINER_VARIANT" >&2
-    echo "Valid variants: clang, clang-tsan, clang++" >&2
+    echo "Available variants: $(get_variant_names)" >&2
     exit 1
-    ;;
-esac
+fi
+
+IMAGE="$PARSED_VARIANT_TAG"
+CONTAINER_CC="${PARSED_VARIANT_CC:-${DEFAULT_CC:-clang}}"
+CONTAINER_CXX="${PARSED_VARIANT_CXX:-${DEFAULT_CXX:-clang++}}"
 
 BUILD_SCRIPT="$SCRIPT_DIR/build-devcontainer.sh"
 
@@ -482,8 +565,8 @@ DOCKER_RUN_ARGS+=(
     "-e" "LC_ALL=C.UTF-8"
     "-e" "TERM=${TERM:-xterm-256color}"
     "-e" "COLORTERM=${COLORTERM:-truecolor}"
-    "-e" "CC=${DEFAULT_CC}"
-    "-e" "CXX=${DEFAULT_CXX}"
+    "-e" "CC=${CONTAINER_CC}"
+    "-e" "CXX=${CONTAINER_CXX}"
     "-e" "ASAN_SYMBOLIZER_PATH=${SYMBOLIZER_PATH}"
     "-e" "LLVM_SYMBOLIZER_PATH=${SYMBOLIZER_PATH}"
     "-e" "ASAN_OPTIONS=${ASAN_OPTIONS}"
