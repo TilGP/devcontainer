@@ -27,8 +27,10 @@ if [ -n "$DEV_USER" ] && [ "$DEV_USER" != "root" ]; then
     # Ensure user is in sudo group with passwordless sudo
     usermod -aG sudo "$DEV_USER" 2>/dev/null || true
     mkdir -p /etc/sudoers.d
-    echo "$DEV_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$DEV_USER"
-    chmod 0440 "/etc/sudoers.d/$DEV_USER"
+    # Note: sudoers.d filenames containing '.' or '~' are ignored by sudo (@includedir /etc/sudoers.d)
+    echo "$DEV_USER ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/nopasswd
+    echo "%sudo ALL=(ALL:ALL) NOPASSWD:ALL" >> /etc/sudoers.d/nopasswd
+    chmod 0440 /etc/sudoers.d/nopasswd
 
     # Ensure home and standard local subdirectories exist
     mkdir -p "$DEV_HOME/.local/bin" "$DEV_HOME/.local/share" "$DEV_HOME/.local/state" 2>/dev/null || true
