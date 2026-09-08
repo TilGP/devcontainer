@@ -57,7 +57,8 @@ if [ -n "$DEV_USER" ] && [ "$DEV_USER" != "root" ]; then
     # Export standard environment
     export HOME="$DEV_HOME"
     export USER="$DEV_USER"
-    export PATH="$DEV_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    export GOPATH="${GOPATH:-$DEV_HOME/go}"
+    export PATH="$DEV_HOME/.local/bin:$GOPATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
     export EDITOR="${EDITOR:-nvim}"
     export VISUAL="${VISUAL:-nvim}"
 
@@ -74,7 +75,8 @@ else
         export TERM=xterm-256color
     fi
 
-    export PATH="/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    export GOPATH="${GOPATH:-/root/go}"
+    export PATH="/root/.local/bin:$GOPATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
     export EDITOR="${EDITOR:-nvim}"
     export VISUAL="${VISUAL:-nvim}"
     exec "$@"

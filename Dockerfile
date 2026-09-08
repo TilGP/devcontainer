@@ -103,6 +103,29 @@ RUN set -ex; \
     curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/u* /usr/bin/
 
+# Install latest Go from go.dev
+RUN set -ex; \
+    ARCH="$(uname -m)"; \
+    case "${ARCH}" in \
+    aarch64|arm64) GO_ARCH="arm64" ;; \
+    x86_64|amd64)  GO_ARCH="amd64" ;; \
+    *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -1)"; \
+    [ -n "${GO_VERSION}" ] || { echo "Failed to determine latest Go version" >&2; exit 1; }; \
+    echo "Installing ${GO_VERSION} for linux-${GO_ARCH}..."; \
+    rm -rf /usr/local/go; \
+    curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
+    | tar -C /usr/local -xz; \
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go; \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
+    /usr/local/bin/go version
+
+# Install grpcurl via go
+RUN set -ex; \
+    GOBIN=/usr/local/bin /usr/local/bin/go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest; \
+    /usr/local/bin/grpcurl -version
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
