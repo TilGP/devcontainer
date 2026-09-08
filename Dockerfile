@@ -18,6 +18,7 @@ RUN apt-get update -qq && \
     git \
     git-lfs \
     gosu \
+    groff \
     gzip \
     kitty-terminfo \
     lazygit \
