@@ -111,7 +111,7 @@ cp settings.env.dist settings.env
 You can customize the devcontainer environment by editing `settings.env` directly:
 
 - **Compiler Variants:** Configure available toolchain variants in the `VARIANTS` array (e.g. `clang`, `clang-tsan`, `gcc`).
-- **Base Images & Registry:** Change `REGISTRY` or provide a global `BASE_IMAGE` override.
+- **Base Images & Registry:** Change `REGISTRY` or provide a global `BASE_IMAGE` override. Control automated image pulling with `PULL_BASE_IMAGE`.
 - **Default Variant & Mode:** Set `DEFAULT_CONTAINER_VARIANT="clang"` and `DEFAULT_SHELL_MODE="tmux"`.
 - **Docker Run Arguments:** Customize `DOCKER_RUN_BASE_ARGS` or add custom flags (e.g. port forwards, GPU flags) to `DOCKER_RUN_EXTRA_ARGS`.
 - **Volumes & Mounts:** Configure isolated Docker volumes and host mounts in `VOLUMES`, or customize `PROJECTS_DIR`. All named volumes are auto-created and initialized with proper user ownership.
@@ -141,7 +141,8 @@ Modes:
 Options:
   --init-config      Copy host fish, tmux, and Neovim configs into the config volume
   --stop             Stop the running devcontainer for the current directory
-  --re-build         Rebuild the container image before starting
+  --re-build         Rebuild the container image before starting (pulls latest base image)
+  --no-pull          Do not pull base image when rebuilding
   --verbose          Enable bash tracing (set -x)
   -e KEY=VAL         Pass additional environment variable
   --root             Run container directly as root (default: match host user)

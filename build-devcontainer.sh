@@ -138,6 +138,8 @@ EOF
   all          Build all configured variants
 
 Options:
+  --pull       Pull base image from registry before building (default)
+  --no-pull    Do not pull base image from registry before building
   --no-cache   Build Docker image without cache
   --verbose    Enable bash tracing (set -x)
   -h, --help   Show this help message
@@ -147,6 +149,7 @@ EOF
 build_variant() {
     local target="$1"
     local no_cache_flag="$2"
+    local pull="$3"
 
     if ! find_variant "$target"; then
         echo "Error: Unknown variant '$target'." >&2
@@ -163,8 +166,16 @@ build_variant() {
     echo "Architecture:                ${TOOLCHAIN_ARCH}"
     echo "============================================================"
 
+    local pull_build_flag=""
+    if [ "$pull" = true ]; then
+        echo "Pulling latest base image from registry: ${base_image}..."
+        docker pull "${base_image}"
+        pull_build_flag="--pull"
+    fi
+
     # shellcheck disable=SC2086
     docker build \
+        ${pull_build_flag} \
         ${no_cache_flag} \
         --build-arg BASE_IMAGE="${base_image}" \
         -t "${tag_name}" \
@@ -176,6 +187,7 @@ build_variant() {
 
 VARIANT="${DEFAULT_CONTAINER_VARIANT:-clang}"
 NO_CACHE=""
+PULL="${PULL_BASE_IMAGE:-true}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -185,6 +197,14 @@ while [ $# -gt 0 ]; do
             ;;
         --no-cache)
             NO_CACHE="--no-cache"
+            shift
+            ;;
+        --pull)
+            PULL=true
+            shift
+            ;;
+        --no-pull)
+            PULL=false
             shift
             ;;
         --verbose)
@@ -207,8 +227,8 @@ if [ "$VARIANT" = "all" ]; then
     for entry in "${VARIANTS[@]}"; do
         [ -z "$entry" ] && continue
         parse_variant_entry "$entry"
-        build_variant "$PARSED_VARIANT_NAME" "$NO_CACHE"
+        build_variant "$PARSED_VARIANT_NAME" "$NO_CACHE" "$PULL"
     done
 else
-    build_variant "$VARIANT" "$NO_CACHE"
+    build_variant "$VARIANT" "$NO_CACHE" "$PULL"
 fi

@@ -114,6 +114,7 @@ CONTAINER_VARIANT="${CONTAINER_VARIANT:-${DEFAULT_CONTAINER_VARIANT:-clang}}"
 SHELL_MODE="${DEV_CONTAINER_SHELL:-${DEFAULT_SHELL_MODE:-tmux}}" # tmux, fish, or nvim
 EXTRA_DOCKER_ARGS=()
 REBUILD=false
+NO_PULL=false
 INIT_CONFIG=false
 STOP_CONTAINER=false
 VERBOSE=false
@@ -149,7 +150,8 @@ Modes:
 Options:
   --init-config      Copy host fish, tmux, and Neovim configs into the config volume
   --stop             Stop the running devcontainer for the current directory
-  --re-build         Rebuild the container image before starting
+  --re-build         Rebuild the container image before starting (pulls latest base image)
+  --no-pull          Do not pull base image when rebuilding
   --verbose          Enable bash tracing (set -x)
   -e KEY=VAL         Pass additional environment variable
   --root             Run container directly as root (default: match host user)
@@ -219,6 +221,14 @@ while [ $# -gt 0 ]; do
         REBUILD=true
         shift
         ;;
+    --no-pull)
+        NO_PULL=true
+        shift
+        ;;
+    --pull)
+        NO_PULL=false
+        shift
+        ;;
     --verbose)
         VERBOSE=true
         set -x
@@ -278,9 +288,8 @@ if [ "$REBUILD" = true ]; then
     echo "Rebuilding devcontainer image for variant '$CONTAINER_VARIANT'..."
     if [ -f "$BUILD_SCRIPT" ]; then
         BUILD_ARGS=("$CONTAINER_VARIANT")
-        if [ "$VERBOSE" = true ]; then
-            BUILD_ARGS+=("--verbose")
-        fi
+        [ "$VERBOSE" = true ] && BUILD_ARGS+=("--verbose")
+        [ "$NO_PULL" = true ] && BUILD_ARGS+=("--no-pull")
         "$BUILD_SCRIPT" "${BUILD_ARGS[@]}"
     else
         echo "Build script not found at '$BUILD_SCRIPT'. Cannot rebuild image." >&2
@@ -291,9 +300,8 @@ elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "Attempting to build it..."
     if [ -f "$BUILD_SCRIPT" ]; then
         BUILD_ARGS=("$CONTAINER_VARIANT")
-        if [ "$VERBOSE" = true ]; then
-            BUILD_ARGS+=("--verbose")
-        fi
+        [ "$VERBOSE" = true ] && BUILD_ARGS+=("--verbose")
+        [ "$NO_PULL" = true ] && BUILD_ARGS+=("--no-pull")
         "$BUILD_SCRIPT" "${BUILD_ARGS[@]}"
     else
         echo "Build script not found at '$BUILD_SCRIPT'. Please build the image first." >&2
