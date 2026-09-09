@@ -38,7 +38,6 @@ RUN apt-get update -qq && \
     sudo \
     tar \
     thefuck \
-    tmux \
     unzip \
     wget \
     xz-utils \
@@ -97,6 +96,28 @@ RUN set -ex; \
     | tar -xz -C /opt/nvim --strip-components=1; \
     ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
     /usr/local/bin/nvim --version | head -2
+
+# Build latest tmux from source
+RUN set -ex; \
+    apt-get update -qq; \
+    apt-get install -y -qq --no-install-recommends \
+    bison \
+    libevent-dev \
+    libncurses-dev \
+    make \
+    pkg-config; \
+    TMUX_VERSION="$(curl -sIL https://github.com/tmux/tmux/releases/latest | tr -d '\r' | awk -F'/tag/' '/^[Ll]ocation:/ {print $2}')"; \
+    [ -n "${TMUX_VERSION}" ] || { echo "Failed to determine latest tmux version" >&2; exit 1; }; \
+    echo "Installing tmux ${TMUX_VERSION}..."; \
+    mkdir -p /tmp/tmux-build; \
+    curl -sSL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" \
+    | tar -xz -C /tmp/tmux-build --strip-components=1; \
+    cd /tmp/tmux-build; \
+    ./configure --prefix=/usr/local >/dev/null; \
+    make -j"$(nproc)" >/dev/null; \
+    make install; \
+    cd /; rm -rf /tmp/tmux-build /var/lib/apt/lists/*; \
+    /usr/local/bin/tmux -V
 
 
 # insatll uv
