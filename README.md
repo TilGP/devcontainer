@@ -1,5 +1,7 @@
 # Neovim Development Container (devcontainer-nvim)
 
+NOTE: this tool is fully vibe coded. Almost no line of code was read by a human.
+
 Project-independent Docker-based development environment running Neovim, Fish, Tmux, and a C++ base-toolchain-image directly inside Linux.
 
 NOTE: This is specifically tailored to my development setup and use-case.
