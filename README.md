@@ -73,6 +73,9 @@ start-dev-container --verbose
 # Stop the running container for the current directory
 start-dev-container --stop
 
+# Mount the host Docker socket (run docker from inside the container)
+start-dev-container --docker
+
 # Run an arbitrary command inside the container (runs foreground)
 start-dev-container -- make -j8
 start-dev-container -c "cmake --build cmake-build-debug"
@@ -113,7 +116,7 @@ You can customize the devcontainer environment by editing `settings.env` directl
 - **Compiler Variants:** Configure available toolchain variants in the `VARIANTS` array (e.g. `clang`, `clang-tsan`, `gcc`).
 - **Base Images & Registry:** Change `REGISTRY` or provide a global `BASE_IMAGE` override. Control automated image pulling with `PULL_BASE_IMAGE`.
 - **Default Variant & Mode:** Set `DEFAULT_CONTAINER_VARIANT="clang"` and `DEFAULT_SHELL_MODE="tmux"`.
-- **Docker Run Arguments:** Customize `DOCKER_RUN_BASE_ARGS` or add custom flags (e.g. port forwards, GPU flags) to `DOCKER_RUN_EXTRA_ARGS`.
+- **Docker Run Arguments:** Customize `DOCKER_RUN_BASE_ARGS` or add custom flags (e.g. port forwards, GPU flags) to `DOCKER_RUN_EXTRA_ARGS`. Set `MOUNT_DOCKER_SOCKET=true` (or pass `--docker`) to bind-mount the host Docker socket and run containers from inside the devcontainer.
 - **Volumes & Mounts:** Configure isolated Docker volumes and host mounts in `VOLUMES`, or customize `PROJECTS_DIR`. All named volumes are auto-created and initialized with proper user ownership.
 - **Compilers & Sanitizers:** Adjust `DEFAULT_CC`, `DEFAULT_CXX`, `DEV_TIMEZONE`, `ASAN_OPTIONS`, and `TSAN_OPTIONS`.
 
@@ -146,6 +149,8 @@ Options:
   --verbose          Enable bash tracing (set -x)
   -e KEY=VAL         Pass additional environment variable
   --root             Run container directly as root (default: match host user)
+  --docker           Mount the host Docker socket (run containers from inside)
+  --no-docker        Do not mount the Docker socket (overrides settings.env)
   -w DIR             Set custom working directory inside container
   --name NAME        Set container name
   -h, --help         Show help message

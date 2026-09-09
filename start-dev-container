@@ -118,6 +118,11 @@ NO_PULL=false
 INIT_CONFIG=false
 STOP_CONTAINER=false
 VERBOSE=false
+# Allow settings.env to enable socket mounting by default; CLI flags override
+case "${MOUNT_DOCKER_SOCKET:-false}" in
+    true | TRUE | yes | YES | 1 | on | ON) MOUNT_DOCKER_SOCKET=true ;;
+    *) MOUNT_DOCKER_SOCKET=false ;;
+esac
 
 show_help() {
     cat <<EOF
@@ -155,6 +160,8 @@ Options:
   --verbose          Enable bash tracing (set -x)
   -e KEY=VAL         Pass additional environment variable
   --root             Run container directly as root (default: match host user)
+  --docker           Mount the host Docker socket (run containers from inside)
+  --no-docker        Do not mount the Docker socket (overrides settings.env)
   -w DIR             Set custom working directory inside container
   --name NAME        Set container name
   -h, --help         Show this help message
@@ -215,6 +222,14 @@ while [ $# -gt 0 ]; do
         ;;
     --root)
         AS_ROOT=true
+        shift
+        ;;
+    --docker | --docker-socket)
+        MOUNT_DOCKER_SOCKET=true
+        shift
+        ;;
+    --no-docker | --no-docker-socket)
+        MOUNT_DOCKER_SOCKET=false
         shift
         ;;
     --re-build | --rebuild)
@@ -546,6 +561,37 @@ if [ -n "$SSH_AUTH_SOCK" ] && [ -e "$SSH_AUTH_SOCK" ]; then
         )
     else
         DOCKER_RUN_ARGS+=("-v" "$SSH_AUTH_SOCK:$SSH_AUTH_SOCK" "-e" "SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+    fi
+fi
+
+# Mount host Docker socket so docker CLI inside the container talks to the host daemon
+if [ "$MOUNT_DOCKER_SOCKET" = true ]; then
+    HOST_DOCKER_SOCK=""
+    if [ -n "${DOCKER_SOCKET:-}" ] && [ -S "$DOCKER_SOCKET" ]; then
+        HOST_DOCKER_SOCK="$DOCKER_SOCKET"
+    elif [[ "${DOCKER_HOST:-}" == unix://* ]]; then
+        _docker_host_sock="${DOCKER_HOST#unix://}"
+        if [ -S "$_docker_host_sock" ]; then
+            HOST_DOCKER_SOCK="$_docker_host_sock"
+        fi
+        unset _docker_host_sock
+    fi
+    if [ -z "$HOST_DOCKER_SOCK" ] && [ -S /var/run/docker.sock ]; then
+        HOST_DOCKER_SOCK="/var/run/docker.sock"
+    fi
+    if [ -z "$HOST_DOCKER_SOCK" ] && [ -S "$HOST_HOME/.docker/run/docker.sock" ]; then
+        HOST_DOCKER_SOCK="$HOST_HOME/.docker/run/docker.sock"
+    fi
+
+    if [ -n "$HOST_DOCKER_SOCK" ]; then
+        echo "Mounting Docker socket: ${HOST_DOCKER_SOCK} -> /var/run/docker.sock"
+        DOCKER_RUN_ARGS+=(
+            "-v" "${HOST_DOCKER_SOCK}:/var/run/docker.sock"
+            "-e" "DOCKER_HOST=unix:///var/run/docker.sock"
+        )
+    else
+        echo "Warning: Docker socket mount requested, but no socket was found." >&2
+        echo "Set DOCKER_SOCKET or DOCKER_HOST, or ensure /var/run/docker.sock exists." >&2
     fi
 fi
 

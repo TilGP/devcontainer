@@ -26,6 +26,22 @@ if [ -n "$DEV_USER" ] && [ "$DEV_USER" != "root" ]; then
 
     # Ensure user is in sudo group with passwordless sudo
     usermod -aG sudo "$DEV_USER" 2>/dev/null || true
+
+    # If the host Docker socket is mounted, grant the container user access
+    if [ -S /var/run/docker.sock ]; then
+        sock_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0)"
+        sock_uid="$(stat -c '%u' /var/run/docker.sock 2>/dev/null || echo 0)"
+        if [ "$sock_gid" != "0" ]; then
+            if ! getent group "$sock_gid" >/dev/null 2>&1; then
+                groupadd -g "$sock_gid" docker-host 2>/dev/null || true
+            fi
+            sock_grp="$(getent group "$sock_gid" | cut -d: -f1)"
+            [ -n "$sock_grp" ] && usermod -aG "$sock_grp" "$DEV_USER" 2>/dev/null || true
+        elif [ "$sock_uid" != "$DEV_UID" ]; then
+            # Docker Desktop often exposes the socket as root:root; make it usable
+            chmod 666 /var/run/docker.sock 2>/dev/null || true
+        fi
+    fi
     mkdir -p /etc/sudoers.d
     # Note: sudoers.d filenames containing '.' or '~' are ignored by sudo (@includedir /etc/sudoers.d)
     echo "$DEV_USER ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/nopasswd
