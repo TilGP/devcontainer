@@ -20,6 +20,7 @@ RUN apt-get update -qq && \
     gosu \
     groff \
     gzip \
+    htop \
     kitty-terminfo \
     lazygit \
     less \
@@ -130,11 +131,11 @@ RUN set -ex; \
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
     esac; \
     DOCKER_TGZ="$(curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/" \
-        | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | sort -V | tail -1)"; \
+    | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | sort -V | tail -1)"; \
     [ -n "${DOCKER_TGZ}" ] || { echo "Failed to determine latest Docker static CLI" >&2; exit 1; }; \
     echo "Installing Docker CLI from ${DOCKER_TGZ}..."; \
     curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/${DOCKER_TGZ}" \
-        | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
+    | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
     /usr/local/bin/docker --version
 
 # Install grpcurl via go
