@@ -163,7 +163,7 @@ Options:
   --docker           Mount the host Docker socket (run containers from inside)
   --no-docker        Do not mount the Docker socket (overrides settings.env)
   -w DIR             Set custom working directory inside container
-  --name NAME        Set container name
+  --name NAME        Set container name (default: dev-<cwd>, with -2, -3, ... if taken)
   -h, --help         Show this help message
 
 Examples:
@@ -181,6 +181,7 @@ COMMAND_OVERRIDE=()
 AS_ROOT=false
 CUSTOM_WORKDIR=""
 CONTAINER_NAME=""
+USER_SET_CONTAINER_NAME=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -259,6 +260,7 @@ while [ $# -gt 0 ]; do
         ;;
     --name)
         CONTAINER_NAME="$2"
+        USER_SET_CONTAINER_NAME=true
         shift 2
         ;;
     --)
@@ -331,6 +333,49 @@ HOST_GID="$(id -g)"
 HOST_HOME="$HOME"
 CURRENT_DIR="$(pwd)"
 WORKDIR="${CUSTOM_WORKDIR:-$CURRENT_DIR}"
+
+sanitize_docker_name() {
+    local s="$1"
+    s="$(printf '%s' "$s" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
+    while [[ "$s" == -* || "$s" == .* ]]; do
+        s="${s#?}"
+    done
+    while [[ "$s" == *- || "$s" == *. ]]; do
+        s="${s%?}"
+    done
+    printf '%s' "$s"
+}
+
+container_name_exists() {
+    docker inspect "$1" >/dev/null 2>&1
+}
+
+allocate_container_name() {
+    local base="$1"
+    local name="$base"
+    local n=2
+    while container_name_exists "$name"; do
+        name="${base}-${n}"
+        n=$((n + 1))
+    done
+    printf '%s' "$name"
+}
+
+default_container_name() {
+    local dir
+    dir="$(basename -- "$WORKDIR")"
+    dir="$(sanitize_docker_name "$dir")"
+    [ -z "$dir" ] && dir="workdir"
+    printf 'dev-%s' "$dir"
+}
+
+apply_container_identity() {
+    if [ "$USER_SET_CONTAINER_NAME" != true ]; then
+        CONTAINER_NAME="$(allocate_container_name "$(default_container_name)")"
+    fi
+    local hostname="${CONTAINER_NAME//_/-}"
+    DOCKER_RUN_ARGS+=("--name" "$CONTAINER_NAME" "--hostname" "$hostname")
+}
 
 # Handle --stop request
 if [ "$STOP_CONTAINER" = true ]; then
@@ -510,11 +555,6 @@ if [ -n "${DOCKER_RUN_EXTRA_ARGS+x}" ] && [ ${#DOCKER_RUN_EXTRA_ARGS[@]} -gt 0 ]
     DOCKER_RUN_ARGS+=("${DOCKER_RUN_EXTRA_ARGS[@]}")
 fi
 
-# Container name
-if [ -n "$CONTAINER_NAME" ]; then
-    DOCKER_RUN_ARGS+=("--name" "$CONTAINER_NAME")
-fi
-
 # Storage volumes and host mounts configured via settings.env
 if [ ${#STORAGE_MOUNTS[@]} -gt 0 ]; then
     DOCKER_RUN_ARGS+=("${STORAGE_MOUNTS[@]}")
@@ -652,6 +692,7 @@ if [ ${#COMMAND_OVERRIDE[@]} -gt 0 ]; then
     else
         DOCKER_RUN_ARGS+=("-i")
     fi
+    apply_container_identity
     exec docker run "${DOCKER_RUN_ARGS[@]}" "$IMAGE" "${COMMAND_OVERRIDE[@]}"
 fi
 
@@ -696,7 +737,8 @@ if [ -n "$TARGET_CID" ] && [ "$REBUILD" = true ]; then
 fi
 
 if [ -z "$TARGET_CID" ]; then
-    echo "Starting devcontainer in background..."
+    apply_container_identity
+    echo "Starting devcontainer '$CONTAINER_NAME' in background..."
     if ! TARGET_CID=$(docker run -d "${DOCKER_RUN_ARGS[@]}" "$IMAGE" sleep infinity); then
         echo "Error: Failed to start devcontainer." >&2
         exit 1

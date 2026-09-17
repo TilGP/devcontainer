@@ -154,7 +154,7 @@ Options:
   --docker           Mount the host Docker socket (run containers from inside)
   --no-docker        Do not mount the Docker socket (overrides settings.env)
   -w DIR             Set custom working directory inside container
-  --name NAME        Set container name
+  --name NAME        Set container name (default: dev-<cwd>, with -2, -3, ... if taken)
   -h, --help         Show help message
 ```
 
