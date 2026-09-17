@@ -9,6 +9,7 @@ ENV LC_ALL=C.UTF-8
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
     bpython \
+    bubblewrap \
     ca-certificates \
     curl \
     direnv \
@@ -17,6 +18,7 @@ RUN apt-get update -qq && \
     git \
     git-delta \
     git-lfs \
+    jq \
     gosu \
     groff \
     gzip \
