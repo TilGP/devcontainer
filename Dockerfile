@@ -1,6 +1,17 @@
 ARG BASE_IMAGE=registry.example.com/toolchain/trixie/aarch64/clang-22.1.8/main
 FROM ${BASE_IMAGE}
 
+# Pinned tool versions. Bump deliberately when upgrading the toolchain.
+ARG CPPMAN_VERSION=0.6.3
+ARG FISH_VERSION=4.9.3
+ARG NVIM_VERSION=0.12.6
+ARG TMUX_VERSION=3.8
+ARG UV_VERSION=0.13.7
+ARG GO_VERSION=1.27.4
+ARG DOCKER_VERSION=29.9.3
+ARG GRPCURL_VERSION=1.9.4
+ARG CODELLDB_VERSION=1.12.3
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
@@ -18,14 +29,16 @@ RUN apt-get update -qq && \
     git \
     git-delta \
     git-lfs \
-    jq \
     gosu \
     groff \
     gzip \
     htop \
+    jq \
     kitty-terminfo \
     lazygit \
     less \
+    libgcc-s1 \
+    libstdc++6 \
     luarocks \
     most \
     ncurses-term \
@@ -58,9 +71,9 @@ RUN if [ -f /usr/local/bin/clang ]; then \
     chmod +x /usr/local/bin/kitty
 
 # Install cppman for C++ documentation in Neovim (<leader>cp)
-RUN python3 -m pip install --break-system-packages --ignore-installed typing_extensions cppman || true
+RUN python3 -m pip install --break-system-packages --ignore-installed typing_extensions "cppman==${CPPMAN_VERSION}" || true
 
-# Install latest Fish shell from GitHub release
+# Install Fish shell from GitHub release
 RUN set -ex; \
     ARCH="$(uname -m)"; \
     case "${ARCH}" in \
@@ -68,11 +81,9 @@ RUN set -ex; \
     x86_64|amd64)  FISH_ARCH="x86_64" ;; \
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
     esac; \
-    FISH_VERSION="$(curl -sIL https://github.com/fish-shell/fish-shell/releases/latest | tr -d '\r' | awk -F'/tag/' '/^[Ll]ocation:/ {print $2}')"; \
-    [ -n "${FISH_VERSION}" ] || { echo "Failed to determine latest fish version" >&2; exit 1; }; \
     echo "Installing fish ${FISH_VERSION} for ${FISH_ARCH}..."; \
     mkdir -p /tmp/fish-install; \
-    curl -sSL "https://github.com/fish-shell/fish-shell/releases/download/${FISH_VERSION}/fish-${FISH_VERSION}-linux-${FISH_ARCH}.tar.xz" \
+    curl -fsSL "https://github.com/fish-shell/fish-shell/releases/download/${FISH_VERSION}/fish-${FISH_VERSION}-linux-${FISH_ARCH}.tar.xz" \
     | tar -xJ -C /tmp/fish-install; \
     mv /tmp/fish-install/fish /usr/local/bin/fish; \
     ln -sf /usr/local/bin/fish /usr/local/bin/fish_indent; \
@@ -85,7 +96,7 @@ RUN set -ex; \
     grep -qxF "/usr/bin/fish" /etc/shells 2>/dev/null || echo "/usr/bin/fish" >> /etc/shells; \
     /usr/local/bin/fish --version
 
-# Install latest Neovim from GitHub release
+# Install Neovim from GitHub release
 RUN set -ex; \
     ARCH="$(uname -m)"; \
     case "${ARCH}" in \
@@ -93,8 +104,9 @@ RUN set -ex; \
     x86_64|amd64)  NVIM_ARCH="x86_64" ;; \
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
     esac; \
+    echo "Installing Neovim ${NVIM_VERSION} for linux-${NVIM_ARCH}..."; \
     mkdir -p /opt/nvim; \
-    curl -sSL "https://github.com/neovim/neovim/releases/latest/download/nvim-linux-${NVIM_ARCH}.tar.gz" \
+    curl -fsSL "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux-${NVIM_ARCH}.tar.gz" \
     | tar -xz -C /opt/nvim --strip-components=1; \
     ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
     /usr/local/bin/nvim --version | head -2
@@ -108,11 +120,9 @@ RUN set -ex; \
     libncurses-dev \
     make \
     pkg-config; \
-    TMUX_VERSION="$(curl -sIL https://github.com/tmux/tmux/releases/latest | tr -d '\r' | awk -F'/tag/' '/^[Ll]ocation:/ {print $2}')"; \
-    [ -n "${TMUX_VERSION}" ] || { echo "Failed to determine latest tmux version" >&2; exit 1; }; \
     echo "Installing tmux ${TMUX_VERSION}..."; \
     mkdir -p /tmp/tmux-build; \
-    curl -sSL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" \
+    curl -fsSL "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz" \
     | tar -xz -C /tmp/tmux-build --strip-components=1; \
     cd /tmp/tmux-build; \
     ./configure --prefix=/usr/local >/dev/null; \
@@ -122,12 +132,13 @@ RUN set -ex; \
     /usr/local/bin/tmux -V
 
 
-# insatll uv
+# Install uv
 RUN set -ex; \
-    curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && mv /root/.local/bin/u* /usr/bin/
+    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh \
+    && mv /root/.local/bin/u* /usr/bin/ \
+    && uv --version
 
-# Install latest Go from go.dev
+# Install Go from go.dev
 RUN set -ex; \
     ARCH="$(uname -m)"; \
     case "${ARCH}" in \
@@ -135,11 +146,9 @@ RUN set -ex; \
     x86_64|amd64)  GO_ARCH="amd64" ;; \
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
     esac; \
-    GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -1)"; \
-    [ -n "${GO_VERSION}" ] || { echo "Failed to determine latest Go version" >&2; exit 1; }; \
-    echo "Installing ${GO_VERSION} for linux-${GO_ARCH}..."; \
+    echo "Installing Go ${GO_VERSION} for linux-${GO_ARCH}..."; \
     rm -rf /usr/local/go; \
-    curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" \
     | tar -C /usr/local -xz; \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go; \
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt; \
@@ -153,18 +162,34 @@ RUN set -ex; \
     x86_64|amd64)  DOCKER_ARCH="x86_64" ;; \
     *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
     esac; \
-    DOCKER_TGZ="$(curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/" \
-    | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' | sort -V | tail -1)"; \
-    [ -n "${DOCKER_TGZ}" ] || { echo "Failed to determine latest Docker static CLI" >&2; exit 1; }; \
-    echo "Installing Docker CLI from ${DOCKER_TGZ}..."; \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/${DOCKER_TGZ}" \
+    echo "Installing Docker CLI ${DOCKER_VERSION} for linux-${DOCKER_ARCH}..."; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_VERSION}.tgz" \
     | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
     /usr/local/bin/docker --version
 
 # Install grpcurl via go
 RUN set -ex; \
-    GOBIN=/usr/local/bin /usr/local/bin/go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest; \
+    GOBIN=/usr/local/bin /usr/local/bin/go install "github.com/fullstorydev/grpcurl/cmd/grpcurl@v${GRPCURL_VERSION}"; \
     /usr/local/bin/grpcurl -version
+
+# Install CodeLLDB native debug adapter
+RUN set -ex; \
+    ARCH="$(uname -m)"; \
+    case "${ARCH}" in \
+    aarch64|arm64) CODELLDB_ARCH="arm64" ;; \
+    x86_64|amd64)  CODELLDB_ARCH="x64" ;; \
+    *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    echo "Installing CodeLLDB ${CODELLDB_VERSION} for linux-${CODELLDB_ARCH}..."; \
+    curl --fail --location --retry 3 \
+    "https://github.com/vadimcn/codelldb/releases/download/v${CODELLDB_VERSION}/codelldb-linux-${CODELLDB_ARCH}.vsix" \
+    --output /tmp/codelldb.vsix; \
+    mkdir -p /opt/codelldb; \
+    unzip -q /tmp/codelldb.vsix 'extension/*' -d /opt/codelldb; \
+    chmod +x /opt/codelldb/extension/adapter/codelldb; \
+    ln -s /opt/codelldb/extension/adapter/codelldb /usr/local/bin/codelldb; \
+    rm /tmp/codelldb.vsix; \
+    test -x /usr/local/bin/codelldb
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

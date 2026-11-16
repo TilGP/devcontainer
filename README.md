@@ -11,7 +11,7 @@ won't match outside of my setup.
 ## Features
 
 - **Full In-Container Toolchain:** Clang 22, Clangd LSP, LLDB (`lldb-dap`), GDB, and CMake inside the container, giving full visibility into Linux system libraries and headers.
-- **Latest Fish & Neovim:** Built directly from official GitHub releases with standalone multi-arch binaries.
+- **Pinned Fish & Neovim:** Installed from official GitHub releases with standalone multi-arch binaries. Versions are pinned in the Dockerfile and bumped deliberately.
 - **Fish & Tmux Integration:** Initial run automatically copies host configurations from `~/.config/fish`, `~/.config/tmux`, and `~/.config/nvim` into the container config volume, allowing custom in-container tweaks without affecting the macOS host.
 - **Isolated Linux Environment:** Dedicated Docker named volumes (`devcontainer_local`, `devcontainer_config`, `devcontainer_cache`, `devcontainer_cursor`) isolate all `.local`, `.config`, `.cache`, and `.cursor` directories (such as Treesitter `.so` parsers, Mason binaries, shell data, and Cursor CLI state) from macOS binaries.
 - **Clean Project Mounts:** Always mounts `$HOME/projects` as well as the current project working directory, Git root, and essential configs (`.gitconfig`, `.ssh`).
