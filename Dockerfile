@@ -167,6 +167,21 @@ RUN set -ex; \
     | tar -xz -C /usr/local/bin --strip-components=1 docker/docker; \
     /usr/local/bin/docker --version
 
+# Install GitHub CLI (gh) from the official apt repository
+RUN set -ex; \
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    out="$(mktemp)"; \
+    curl -fsSL -o "${out}" https://cli.github.com/packages/githubcli-archive-keyring.gpg; \
+    cat "${out}" > /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    rm -f "${out}"; \
+    mkdir -p -m 755 /etc/apt/sources.list.d; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update -qq; \
+    apt-get install -y -qq --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*; \
+    gh --version
+
 # Install grpcurl via go
 RUN set -ex; \
     GOBIN=/usr/local/bin /usr/local/bin/go install "github.com/fullstorydev/grpcurl/cmd/grpcurl@v${GRPCURL_VERSION}"; \
